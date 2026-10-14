@@ -159,6 +159,8 @@ from open_webui.routers import (
     channels,
     chats,
     configs,
+    # local branch: live engine stats proxy for the chat stats bar
+    engine_stats,
     evaluations,
     files,
     folders,
@@ -878,6 +880,8 @@ app.include_router(openai.router, prefix='/openai', tags=['openai'])
 
 app.include_router(pipelines.router, prefix='/api/v1/pipelines', tags=['pipelines'])
 app.include_router(tasks.router, prefix='/api/v1/tasks', tags=['tasks'])
+# local branch: live engine stats proxy for the chat stats bar
+app.include_router(engine_stats.router, prefix='/api/v1/engine/stats', tags=['engine-stats'])
 app.include_router(images.router, prefix='/api/v1/images', tags=['images'])
 
 app.include_router(audio.router, prefix='/api/v1/audio', tags=['audio'])
