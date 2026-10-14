@@ -46,6 +46,9 @@
 	import ProfileImage from './ProfileImage.svelte';
 	import Image from '$lib/components/common/Image.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+
+	// Local branch: live inference stats (ChatStats)
+	import MessageRunStats from '$lib/components/chat/ChatStats/MessageRunStats.svelte';
 	import RateComment from './RateComment.svelte';
 	import WebSearchResults from './ResponseMessage/WebSearchResults.svelte';
 	import Sparkles from '$lib/components/icons/Sparkles.svelte';
@@ -1216,6 +1219,8 @@
 										</button>
 									</Tooltip>
 								{/if}
+
+								<MessageRunStats {message} />
 
 								{#if message.usage}
 									<Tooltip
