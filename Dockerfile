@@ -160,7 +160,10 @@ COPY --chown=$UID:$GID ./backend/requirements*.txt ./
 ENV UV_LINK_MODE=copy
 
 RUN --mount=from=ghcr.io/astral-sh/uv:0.12.10,source=/uv,target=/bin/uv \
+    --mount=from=mitmca,source=/ca.pem,target=/tmp/mitm-ca.pem \
     set -e; \
+    # local branch: stats — trust corp ZTNA CA (McKinsey ssldecrypt MITM) for HF CDN during model bake; mount is ephemeral
+    export REQUESTS_CA_BUNDLE=/tmp/mitm-ca.pem SSL_CERT_FILE=/tmp/mitm-ca.pem CURL_CA_BUNDLE=/tmp/mitm-ca.pem; \
     if [ "$USE_SLIM" = "true" ]; then \
     uv pip install --system -r requirements-slim.txt --no-cache-dir; \
     elif [ "$USE_CUDA" = "true" ]; then \
