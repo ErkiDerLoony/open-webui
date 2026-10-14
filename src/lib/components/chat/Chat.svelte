@@ -50,6 +50,18 @@
 	} from '$lib/stores';
 	import { refreshChatList, refreshFolderChatLists } from '$lib/stores/chatList';
 
+	// Local branch: live inference stats (ChatStats)
+	import ChatStatsBar from '$lib/components/chat/ChatStats/ChatStatsBar.svelte';
+	import {
+		beginRun,
+		endRun,
+		endRunIf,
+		noteOutputEvent,
+		noteStatus,
+		noteStreamUpdate
+	} from '$lib/stores/generationStats';
+	import { getEngineActivity } from '$lib/apis/engineStats';
+
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import {
@@ -346,6 +358,44 @@
 	};
 
 	$: contextUsage = getContextUsage() ?? (contextCompactionEnabled ? serverContextUsage : null);
+
+	// Local branch: engine telemetry polling for the live stats bar.
+	let enginePollTimer: ReturnType<typeof setInterval> | null = null;
+	let engineActivity: any = null;
+	const engineUnsupportedUntil: Record<number, number> = {};
+
+	const statsUrlIdx = () => {
+		const modelId = selectedModels.find((id) => id);
+		const model = $models.find((m) => m.id === modelId) as any;
+		return typeof model?.urlIdx === 'number' ? model.urlIdx : null;
+	};
+
+	const pollEngineStats = async () => {
+		const idx = statsUrlIdx();
+		if (idx === null) return;
+		if ((engineUnsupportedUntil[idx] ?? 0) > Date.now()) return;
+		if (document.hidden) return;
+		const res: any = await getEngineActivity(localStorage.token, idx);
+		if (res?.supported) {
+			engineUnsupportedUntil[idx] = 0;
+			engineActivity = res;
+		} else {
+			engineUnsupportedUntil[idx] = Date.now() + 30000;
+			engineActivity = null;
+		}
+	};
+
+	$: {
+		if (taskIds?.length && statsUrlIdx() !== null) {
+			if (!enginePollTimer) {
+				void pollEngineStats();
+				enginePollTimer = setInterval(() => void pollEngineStats(), 500);
+			}
+		} else if (enginePollTimer) {
+			clearInterval(enginePollTimer);
+			enginePollTimer = null;
+		}
+	}
 	$: embeddedHeaderTitle = embeddedTitle || $chatTitle || $i18n.t('Chat');
 
 	let selectedToolIds: string[] = [];
@@ -1518,6 +1568,7 @@
 
 				queueMicrotask(() => bridge?.update());
 				if (type === 'status') {
+					noteStatus(event.message_id, data); // local branch: stats
 					if (message?.statusHistory) {
 						message.statusHistory.push(data);
 					} else {
@@ -1528,6 +1579,7 @@
 				} else if (type === 'chat:active') {
 					if (!data?.active) {
 						taskIds = null;
+						endRun(); // local branch: stats (whole chat went idle)
 						if (
 							$chatId &&
 							!$temporaryChatEnabled &&
@@ -1554,6 +1606,7 @@
 					}
 					message.bridgeCancelled = true;
 					bridgeCancellations.get(event.message_id)?.();
+					endRunIf(event.message_id); // local branch: stats
 					if (!event.shared) dismissContextCompactionToast();
 					if (data?.output) {
 						message.output = data.output;
@@ -1957,6 +2010,13 @@
 				dismissContextCompactionToast();
 				audioQueueInstance?.destroy();
 				audioQueue.set(null);
+
+				// local branch: stats
+				if (enginePollTimer) {
+					clearInterval(enginePollTimer);
+					enginePollTimer = null;
+				}
+				endRun();
 			} catch (e) {
 				console.error(e);
 			}
@@ -3324,11 +3384,13 @@
 
 	const responseCompletionEventHandler = (data, message) => {
 		message.output = applyResponseStreamEvent(message.output ?? [], data);
+		noteOutputEvent(message.id, data); // local branch: stats
 
 		if (data?.type === 'response.output_text.delta') {
 			const value = data.delta ?? '';
 			if (!(message.content == '' && value == '\n')) {
 				message.content += value;
+				noteStreamUpdate(message.id, message.content); // local branch: stats
 
 				if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 					navigator.vibrate(5);
@@ -3410,6 +3472,10 @@
 			message.usage = usage;
 		}
 
+		if (!shared) {
+			noteStreamUpdate(message.id, message.content ?? '', usage); // local branch: stats
+		}
+
 		history.messages[message.id] = message;
 		history = history;
 
@@ -3444,6 +3510,8 @@
 					}
 				})
 			);
+
+			endRunIf(message.id); // local branch: stats
 
 			history.messages[message.id] = message;
 
@@ -3874,6 +3942,11 @@
 				// Add message to history and Set currentId to messageId
 				history.messages[responseMessageId] = responseMessage;
 				history.currentId = responseMessageId;
+
+				// local branch: stats — track the primary response message run
+				if (modelIdx == null && _modelIdx === 0) {
+					beginRun(responseMessageId, model.id, (model as any)?.urlIdx ?? null);
+				}
 
 				// Append messageId to childrenIds of parent message
 				if (parentId !== null && history.messages[parentId]) {
@@ -4340,6 +4413,7 @@
 		const errorMessage = getErrorMessage(error, $i18n.t('Server connection failed'));
 		responseMessage.error = { content: errorMessage };
 		responseMessage.done = true;
+		endRunIf(responseMessage.id); // local branch: stats
 		if (responseMessage.statusHistory) {
 			responseMessage.statusHistory = responseMessage.statusHistory.filter(
 				(status) => status.action !== 'knowledge_search'
@@ -5113,6 +5187,11 @@
 									id={embedded ? messageInputDropzoneId : undefined}
 									class=" pb-2 {dragged ? 'z-0' : 'z-10'}"
 								>
+									<ChatStatsBar
+										active={!!taskIds?.length}
+										activity={engineActivity}
+										{contextUsage}
+									/>
 									<MessageInput
 										{typingUsers}
 										on:typing={(event) => emitTyping(event.detail)}
