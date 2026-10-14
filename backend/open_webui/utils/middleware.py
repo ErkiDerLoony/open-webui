@@ -4862,6 +4862,8 @@ async def streaming_chat_response_handler(response, ctx):
             usage = None
             finish_reason = None
             last_response_id = None
+            run_started_at = time.monotonic()  # local branch: stats
+            first_token_seen_at = None  # local branch: stats
 
             def full_output():
                 if (
@@ -5178,6 +5180,9 @@ async def streaming_chat_response_handler(response, ctx):
                                     response_data_type = data.get('type', '')
                                     response_data_is_delta = response_data_type.endswith('.delta')
                                     output, response_metadata = handle_responses_streaming_event(data, output)
+
+                                    if first_token_seen_at is None and response_data_is_delta:  # stats
+                                        first_token_seen_at = time.monotonic()
 
                                     if not response_data_is_delta:
                                         await flush_pending_delta_data()
@@ -5512,6 +5517,8 @@ async def streaming_chat_response_handler(response, ctx):
                                     )
                                     if reasoning_content and not isinstance(reasoning_content, str):
                                         reasoning_content = f'{reasoning_content}'
+                                    if first_token_seen_at is None and (value or reasoning_content):  # stats
+                                        first_token_seen_at = time.monotonic()
                                     reasoning_details = get_reasoning_details(delta)
                                     reasoning_detail_items = (
                                         [item for item in reasoning_details if isinstance(item, dict)]
@@ -6622,6 +6629,18 @@ async def streaming_chat_response_handler(response, ctx):
                         item['status'] = 'completed'
 
                 current_output = full_output()
+
+                # local branch: stamp run timing into usage (persisted + streamed to the stats chip)
+                run_timing = {
+                    'total_time': round(time.monotonic() - run_started_at, 2),
+                    'thinking_time': int(
+                        sum((item.get('duration') or 0) for item in current_output if item.get('type') == 'reasoning')
+                    ),
+                }
+                if first_token_seen_at is not None:
+                    run_timing['ttft'] = round(first_token_seen_at - run_started_at, 2)
+                usage = {**(usage or {}), 'timing': run_timing}
+
                 title = await Chats.get_chat_title_by_id(metadata['chat_id']) if save_to_chat else ''
                 data = {
                     'done': True,
