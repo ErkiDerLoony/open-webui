@@ -4966,6 +4966,7 @@ async def streaming_chat_response_handler(response, ctx):
                     nonlocal output
                     nonlocal prior_output
                     nonlocal last_response_id
+                    nonlocal first_token_seen_at  # local branch: stats (nested fn in v0.12.1 refactor)
 
                     response_tool_calls = []
                     response_usage = {}
