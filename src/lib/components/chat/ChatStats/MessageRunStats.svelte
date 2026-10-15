@@ -1,11 +1,16 @@
 <script lang="ts">
 	// Local branch: run stats chip on messages. While a run is in flight it
-	// shows live time + context ring at the same spot where the completed
-	// chip will settle; finished runs show time · t/s with a details popover.
+	// renders inline right beside the streaming cursor (time · phase · tok/s);
+	// finished runs show time · t/s in the actions row with a details table.
+	// The context ring lives in the composer (MessageInput) instead.
 	import { onDestroy } from 'svelte';
-	import { runStats } from '$lib/stores/generationStats';
-	import { formatDuration, formatRate, formatTokens } from '$lib/utils/streamTiming';
-	import ContextRing from './ContextRing.svelte';
+	import { runStats, syncEngineClaim } from '$lib/stores/generationStats';
+	import {
+		formatDuration,
+		formatRate,
+		getClaimedRequestStats,
+		getCacheHitPercent
+	} from '$lib/utils/streamTiming';
 
 	export let message: any = null;
 
@@ -64,10 +69,45 @@
 	});
 
 	$: liveSec = live && $runStats ? (nowTick - $runStats.startedAt) / 1000 : 0;
-	$: liveCtxPct =
-		live && $runStats?.context && $runStats?.contextThreshold
-			? Math.round(($runStats.context / $runStats.contextThreshold) * 100)
-			: null;
+
+	// Live phase straight from the engine activity mirrored into the store.
+	$: engineModel = live ? syncEngineClaim($runStats?.engineActivity ?? null) : null;
+	$: claimed = engineModel
+		? getClaimedRequestStats(engineModel, $runStats?.claimedRequestId ?? null)
+		: null;
+
+	const clientTps = () => {
+		if (!$runStats?.firstDeltaAt) return 0;
+		const elapsed = (nowTick - $runStats.firstDeltaAt) / 1000;
+		if (elapsed <= 0) return 0;
+		return ($runStats.estTokens ?? 0) / elapsed;
+	};
+
+	const livePhaseText = () => {
+		if (!live) return '';
+		if (engineModel?.is_loading) {
+			const eta =
+				engineModel.loading_remaining_seconds_estimate ??
+				engineModel.loading_estimated_seconds ??
+				null;
+			return `loading${eta ? ` ~${Math.ceil(eta)}s` : ''}`;
+		}
+		if (claimed?.phase === 'prefilling') {
+			const p = claimed.prefill;
+			if (p?.total) {
+				return `prefill ${Math.min(99, Math.max(1, Math.round(((p.processed ?? 0) / p.total) * 100)))}%`;
+			}
+			return 'prefilling';
+		}
+		if (claimed?.phase === 'waiting') return 'queued';
+		return '';
+	};
+
+	const liveTps = () => {
+		const engine = claimed?.generating?.tokens_per_second;
+		if (engine && engine > 0) return engine;
+		return clientTps();
+	};
 
 	const rows = () => {
 		const items: Array<[string, string]> = [];
@@ -79,8 +119,40 @@
 		if (promptTokens) items.push(['Prompt tokens', promptTokens.toLocaleString()]);
 		if (completionTokens) items.push(['Completion tokens', completionTokens.toLocaleString()]);
 		if (cachedTokens) items.push(['Cached tokens', cachedTokens.toLocaleString()]);
+		const cachePct = usage ? getCacheHitPercent(usage) : null;
+		if (cachePct !== null) items.push(['Cache hit', `${cachePct}%`]);
 		return items;
 	};
+
+	const liveRows = () => {
+		const items: Array<[string, string]> = [];
+		items.push(['Run time', formatDuration(liveSec)]);
+		const phase = livePhaseText();
+		if (phase) items.push(['Phase', phase]);
+		const tps = liveTps();
+		if (tps > 0) items.push(['Decode speed', `${formatRate(tps)} tok/s`]);
+		if ($runStats?.firstDeltaAt) {
+			items.push([
+				'First token',
+				formatDuration(($runStats.firstDeltaAt - $runStats.startedAt) / 1000)
+			]);
+		}
+		if ($runStats?.estTokens) items.push(['Tokens so far', $runStats.estTokens.toLocaleString()]);
+		if (claimed?.prefill?.total) {
+			items.push([
+				'Prefill',
+				`${(claimed.prefill.processed ?? 0).toLocaleString()}/${claimed.prefill.total.toLocaleString()}`
+			]);
+		}
+		const waiting =
+			engineModel?.waiting_requests ??
+			$runStats?.engineActivity?.active_models?.total_waiting_requests ??
+			0;
+		if (waiting > 0) items.push(['Queue', `${waiting} waiting`]);
+		return items;
+	};
+
+	$: popoverRows = live ? liveRows() : rows();
 
 	$: visible =
 		live ||
@@ -97,21 +169,20 @@
 </script>
 
 {#if visible}
-	<div class="group relative flex items-center">
+	<div class="group relative inline-flex items-center">
 		{#if live && $runStats}
 			<span
 				class="flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] leading-none text-gray-400 tabular-nums dark:text-gray-500"
 			>
 				<span class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
 				{formatDuration(liveSec)}
-				<ContextRing
-					percent={liveCtxPct}
-					title={$runStats.context
-						? `Context ${formatTokens($runStats.context)} / ${formatTokens($runStats.contextThreshold)} (${liveCtxPct ?? '?'}%)`
-						: ''}
-				/>
-				{#if liveCtxPct !== null}
-					<span class="text-gray-400 dark:text-gray-500">{liveCtxPct}%</span>
+				{#if livePhaseText()}
+					<span class="text-gray-400 dark:text-gray-500">· {livePhaseText()}</span>
+				{/if}
+				{#if liveTps() > 0}
+					<span class="text-gray-400 dark:text-gray-500">
+						· {formatRate(liveTps())} tok/s
+					</span>
 				{/if}
 			</span>
 		{:else}
@@ -121,19 +192,21 @@
 			>
 				{label()}
 			</button>
-			{#if rows().length > 0}
-				<div
-					class="pointer-events-none absolute bottom-full right-0 z-30 mb-1 hidden w-52 rounded-xl border border-gray-100 bg-white p-2.5 text-[11px] shadow-xl group-hover:block dark:border-gray-800 dark:bg-gray-900"
-				>
-					<div class="mb-1.5 font-medium text-gray-700 dark:text-gray-200">Run details</div>
-					<div class="grid grid-cols-[auto_auto] gap-x-3 gap-y-1">
-						{#each rows() as [k, v]}
-							<div class="text-gray-500 dark:text-gray-400">{k}</div>
-							<div class="text-right tabular-nums text-gray-700 dark:text-gray-200">{v}</div>
-						{/each}
-					</div>
+		{/if}
+		{#if popoverRows.length > 0}
+			<div
+				class="pointer-events-none absolute bottom-full right-0 z-30 mb-1 hidden w-52 rounded-xl border border-gray-100 bg-white p-2.5 text-[11px] shadow-xl group-hover:block dark:border-gray-800 dark:bg-gray-900"
+			>
+				<div class="mb-1.5 font-medium text-gray-700 dark:text-gray-200">
+					{live ? 'Live run' : 'Run details'}
 				</div>
-			{/if}
+				<div class="grid grid-cols-[auto_auto] gap-x-3 gap-y-1">
+					{#each popoverRows as [k, v]}
+						<div class="text-gray-500 dark:text-gray-400">{k}</div>
+						<div class="text-right tabular-nums text-gray-700 dark:text-gray-200">{v}</div>
+					{/each}
+				</div>
+			</div>
 		{/if}
 	</div>
 {/if}

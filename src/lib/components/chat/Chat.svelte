@@ -51,7 +51,6 @@
 	import { refreshChatList, refreshFolderChatLists } from '$lib/stores/chatList';
 
 	// Local branch: live inference stats (ChatStats)
-	import ChatStatsBar from '$lib/components/chat/ChatStats/ChatStatsBar.svelte';
 	import {
 		beginRun,
 		endRun,
@@ -59,6 +58,7 @@
 		noteOutputEvent,
 		noteStatus,
 		noteStreamUpdate,
+		setEngineActivity,
 		setRunContext
 	} from '$lib/stores/generationStats';
 	import { getEngineActivity } from '$lib/apis/engineStats';
@@ -385,9 +385,11 @@
 		if (res?.supported) {
 			engineUnsupportedUntil[idx] = 0;
 			engineActivity = res;
+			setEngineActivity(res); // local branch: stats (inline chips read it from the store)
 		} else {
 			engineUnsupportedUntil[idx] = Date.now() + 30000;
 			engineActivity = null;
+			setEngineActivity(null); // local branch: stats
 		}
 	};
 
@@ -5196,11 +5198,6 @@
 									id={embedded ? messageInputDropzoneId : undefined}
 									class=" pb-2 {dragged ? 'z-0' : 'z-10'}"
 								>
-									<ChatStatsBar
-										active={!!taskIds?.length}
-										activity={engineActivity}
-										{contextUsage}
-									/>
 									<MessageInput
 										{typingUsers}
 										on:typing={(event) => emitTyping(event.detail)}

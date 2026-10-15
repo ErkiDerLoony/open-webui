@@ -49,6 +49,7 @@
 
 	// Local branch: live inference stats (ChatStats)
 	import MessageRunStats from '$lib/components/chat/ChatStats/MessageRunStats.svelte';
+	import { formatUsageTooltipHtml } from '$lib/utils/streamTiming'; // local branch: stats
 	import RateComment from './RateComment.svelte';
 	import WebSearchResults from './ResponseMessage/WebSearchResults.svelte';
 	import Sparkles from '$lib/components/icons/Sparkles.svelte';
@@ -909,10 +910,11 @@
 							{/if}
 
 							{#if !message.done && !message.error && (hasResponseContent || !hasVisibleStatus)}
-								<div class="text-[0.9375rem] leading-relaxed">
+								<div class="flex flex-wrap items-center gap-1.5 text-[0.9375rem] leading-relaxed">
 									<span
 										class="inline-block w-[0.125rem] h-3.5 bg-gray-400 dark:bg-gray-500 ml-0.5 animate-cursor-pulse align-text-bottom"
 									></span>
+									<MessageRunStats {message} />
 								</div>
 							{/if}
 
@@ -1220,23 +1222,12 @@
 									</Tooltip>
 								{/if}
 
-								<MessageRunStats {message} />
+								{#if message.done}
+									<MessageRunStats {message} />
+								{/if}
 
 								{#if message.usage}
-									<Tooltip
-										content={message.usage
-											? `<pre>${sanitizeResponseContent(
-													JSON.stringify(message.usage, null, 2)
-														.replace(/"([^(")"]+)":/g, '$1:')
-														.slice(1, -1)
-														.split('\n')
-														.map((line) => line.slice(2))
-														.map((line) => (line.endsWith(',') ? line.slice(0, -1) : line))
-														.join('\n')
-												)}</pre>`
-											: ''}
-										placement="bottom"
-									>
+									<Tooltip content={formatUsageTooltipHtml(message.usage)} placement="bottom">
 										<button
 											aria-hidden="true"
 											class=" {isLastMessage || ($settings?.highContrastMode ?? false)

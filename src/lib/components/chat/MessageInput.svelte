@@ -103,6 +103,7 @@
 
 	import InputVariablesModal from './MessageInput/InputVariablesModal.svelte';
 	import Voice from '../icons/Voice.svelte';
+	import ContextRing from './ChatStats/ContextRing.svelte'; // local branch: stats
 	import Terminal from '../icons/Terminal.svelte';
 	import IntegrationsMenu from './MessageInput/IntegrationsMenu.svelte';
 	import TerminalMenu from './MessageInput/TerminalMenu.svelte';
@@ -2857,6 +2858,21 @@
 											</div>
 										{:else}
 											<div class=" flex items-center">
+												<!-- local branch: stats — context usage ring beside send button -->
+												<div class="flex items-center gap-1 mr-1.5 self-center">
+													<ContextRing
+														percent={contextHasThreshold ? contextBarPercent : null}
+														size={16}
+														strokeWidth={2}
+														title={contextValue}
+													/>
+													{#if contextHasThreshold}
+														<span
+															class="text-[10px] leading-none text-gray-400 dark:text-gray-500 tabular-nums"
+															>{contextBarPercent}%</span
+														>
+													{/if}
+												</div>
 												<Tooltip
 													content={uploadPending
 														? $i18n.t('Waiting for upload...')

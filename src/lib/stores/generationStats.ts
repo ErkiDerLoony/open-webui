@@ -28,6 +28,7 @@ export type RunStats = {
 	claimedRequestId: string | null;
 	context: number | null;
 	contextThreshold: number | null;
+	engineActivity: any | null;
 };
 
 export const runStats = writable<RunStats | null>(null);
@@ -45,8 +46,15 @@ export const beginRun = (messageId: string, modelId: string, urlIdx: number | nu
 		steps: [],
 		claimedRequestId: null,
 		context: null,
-		contextThreshold: null
+		contextThreshold: null,
+		engineActivity: null
 	});
+};
+
+// Live engine activity snapshot mirrored from Chat's poll so message-level
+// chips can render phases without prop drilling.
+export const setEngineActivity = (activity: any | null) => {
+	runStats.update((run) => (run ? { ...run, engineActivity: activity } : run));
 };
 
 // Live context usage pushed from Chat's reactive block while a run is active.

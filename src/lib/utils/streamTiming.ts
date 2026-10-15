@@ -148,6 +148,51 @@ export const getCacheHitPercent = (usage: any): number | null => {
 	return Math.min(100, Math.round((cached / prompt) * 100));
 };
 
+// Pretty HTML table for message usage tooltips (local branch: stats).
+export const formatUsageTooltipHtml = (usage: any): string => {
+	if (!usage || typeof usage !== 'object') return '';
+	const rows: Array<[string, string]> = [];
+	const num = (v: any) => (typeof v === 'number' && isFinite(v) ? v : null);
+	const prompt = num(usage.prompt_tokens ?? usage.input_tokens ?? usage.prompt_eval_count);
+	const completion = num(usage.completion_tokens ?? usage.output_tokens ?? usage.eval_count);
+	const total = num(usage.total_tokens ?? usage.total_generated_tokens);
+	const cached = num(usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens);
+	const ttft = num(usage.timing?.ttft ?? usage.time_to_first_token);
+	const thinking = num(usage.timing?.thinking_time);
+	const totalT = num(usage.timing?.total_time ?? usage.total_time);
+	const prefillTps = num(usage.prompt_tokens_per_second ?? usage.prompt_eval_per_second);
+	const genTps = num(
+		(usage.generation_tokens_per_second ??
+			usage.completion_tokens_per_second ??
+			usage.eval_duration)
+			? num(usage.completion_tokens ?? usage.output_tokens) != null && num(usage.eval_duration)
+				? ((num(usage.completion_tokens ?? usage.output_tokens) as number) /
+						(num(usage.eval_duration) as number)) *
+					1_000_000
+				: null
+			: null
+	);
+	if (prompt) rows.push(['Prompt tokens', prompt.toLocaleString()]);
+	if (completion) rows.push(['Completion tokens', completion.toLocaleString()]);
+	if (total) rows.push(['Total tokens', total.toLocaleString()]);
+	if (cached) rows.push(['Cached tokens', cached.toLocaleString()]);
+	if (cached && prompt)
+		rows.push(['Cache hit', `${Math.min(100, Math.round((cached / prompt) * 100))}%`]);
+	if (ttft !== null && ttft > 0) rows.push(['Time to first token', formatDuration(ttft)]);
+	if (thinking !== null && thinking > 0) rows.push(['Thinking time', formatDuration(thinking)]);
+	if (totalT !== null && totalT > 0) rows.push(['Total time', formatDuration(totalT)]);
+	if (prefillTps) rows.push(['Prefill speed', `${formatRate(prefillTps)} tok/s`]);
+	if (genTps) rows.push(['Decode speed', `${formatRate(genTps)} tok/s`]);
+	if (rows.length === 0) return '';
+	const body = rows
+		.map(
+			([k, v]) =>
+				`<tr><td style="padding:1px 14px 1px 0;opacity:.7">${k}</td><td style="text-align:right;font-variant-numeric:tabular-nums">${v}</td></tr>`
+		)
+		.join('');
+	return `<table style="border-collapse:collapse;font-size:11px">${body}</table>`;
+};
+
 // Breakdown of the current context from a usage payload.
 export const getContextBreakdown = (
 	usage: any
