@@ -12,6 +12,7 @@
 		getContextBreakdown
 	} from '$lib/utils/streamTiming';
 	import StepTimeline from './StepTimeline.svelte';
+	import ContextRing from './ContextRing.svelte';
 
 	export let active = false;
 	export let activity: any = null;
@@ -20,6 +21,7 @@
 	const STORAGE_KEY = 'owui.showGenerationStats';
 
 	let expanded = false;
+	let hovered = false;
 	let enabled = true;
 	let nowTick = Date.now();
 	let timer: ReturnType<typeof setInterval> | null = null;
@@ -65,7 +67,12 @@
 
 	$: totalSec = run ? (nowTick - run.startedAt) / 1000 : 0;
 	$: ttftSec = run?.firstDeltaAt ? (run.firstDeltaAt - run.startedAt) / 1000 : null;
-	$: stepSec = run?.step ? (nowTick - run.step.startedAt) / 1000 : null;
+	$: stepSec = run?.step ? ((run.step.endedAt ?? nowTick) - run.step.startedAt) / 1000 : null;
+	$: ctxPct =
+		contextUsage?.percent ??
+		(contextUsage?.tokens && contextUsage?.threshold
+			? Math.round((contextUsage.tokens / contextUsage.threshold) * 100)
+			: null);
 
 	const clientTps = () => {
 		if (!run?.firstDeltaAt) return 0;
@@ -116,8 +123,16 @@
 
 <div class="mx-auto w-full max-w-[58rem] pb-1">
 	{#if visible && run}
-		<div class="relative">
-			{#if expanded}
+		<div
+			class="relative"
+			on:mouseenter={() => {
+				hovered = true;
+			}}
+			on:mouseleave={() => {
+				hovered = false;
+			}}
+		>
+			{#if expanded || hovered}
 				<div
 					class="absolute bottom-full left-2 z-30 mb-1 w-[22rem] max-w-[calc(100vw-2rem)] rounded-xl border border-gray-100 bg-white p-3 text-xs shadow-xl dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300"
 				>
@@ -134,6 +149,15 @@
 						{#if run.step}
 							<div class="text-gray-500">Current step</div>
 							<div class="truncate text-right">{run.step.label} · {formatDuration(stepSec)}</div>
+						{/if}
+						{#if !genRow()}
+							<div class="text-gray-500">Generated</div>
+							<div class="text-right tabular-nums">
+								{formatTokens(run.estTokens)} tok
+								{#if clientTps() > 0}
+									· {formatRate(clientTps())} t/s
+								{/if}
+							</div>
 						{/if}
 						{#if prefillRow()}
 							<div class="text-gray-500">Prefill</div>
@@ -240,51 +264,32 @@
 				{:else if claimed?.phase === 'waiting'}
 					<span class="shrink-0">queued</span>
 				{:else if claimed?.phase === 'prefilling'}
-					<span class="shrink-0">prefill {prefillPct() ?? '?'}%</span>
+					<span class="shrink-0">prefill {prefillPct() ?? '?'}</span>
 					<span class="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
 						<span
 							class="block h-full rounded-full bg-sky-400 transition-all"
 							style="width: {prefillPct() ?? 0}%"
 						></span>
 					</span>
-					{#if prefillRow()?.speed}
-						<span class="shrink-0 tabular-nums">
-							{formatRate(prefillRow()?.speed)} t/s
-						</span>
-					{/if}
 				{:else}
-					<span class="shrink-0 tabular-nums"
-						>{formatTokens(genRow()?.generated_tokens ?? run.estTokens)} tok</span
-					>
-					{#if decodeTps() > 0}
-						<span class="shrink-0 tabular-nums">· {formatRate(decodeTps())} t/s</span>
-					{/if}
+					<span class="hidden shrink-0 text-gray-400 sm:inline dark:text-gray-500">decoding</span>
 				{/if}
 
-				{#if ttftSec !== null && !loading()}
-					<span class="hidden shrink-0 tabular-nums md:inline"
-						>· TTFT {formatDuration(ttftSec)}</span
-					>
-				{/if}
-				{#if run.step?.label}
-					<span class="truncate">· {run.step.label} {formatDuration(stepSec)}</span>
-				{/if}
-				{#if cachedPct !== null}
-					<span class="hidden shrink-0 tabular-nums lg:inline">· cached {cachedPct}%</span>
-				{/if}
-				{#if contextUsage?.tokens && contextUsage.percent != null}
-					<span class="hidden shrink-0 tabular-nums sm:inline">
-						ctx {formatTokens(contextUsage.tokens)}{contextUsage.threshold
-							? `/${formatTokens(contextUsage.threshold)}`
-							: ''}
-						({contextUsage.percent}%)
-					</span>
+				<span class="ml-auto"></span>
+				<ContextRing
+					percent={ctxPct}
+					title={contextUsage?.tokens
+						? `Context ${formatTokens(contextUsage.tokens)} / ${formatTokens(contextUsage.threshold)} (${ctxPct ?? '?'}%)`
+						: ''}
+				/>
+				{#if ctxPct !== null}
+					<span class="shrink-0 tabular-nums">{ctxPct}%</span>
 				{/if}
 				<svg
 					xmlns="http://www.w3.org/2000/svg"
 					viewBox="0 0 20 20"
 					fill="currentColor"
-					class="ml-auto h-3 w-3 shrink-0 {expanded ? 'rotate-180' : ''}"
+					class="h-3 w-3 shrink-0 {expanded ? 'rotate-180' : ''}"
 				>
 					<path
 						fill-rule="evenodd"

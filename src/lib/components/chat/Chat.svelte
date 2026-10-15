@@ -58,7 +58,8 @@
 		endRunIf,
 		noteOutputEvent,
 		noteStatus,
-		noteStreamUpdate
+		noteStreamUpdate,
+		setRunContext
 	} from '$lib/stores/generationStats';
 	import { getEngineActivity } from '$lib/apis/engineStats';
 
@@ -358,6 +359,11 @@
 	};
 
 	$: contextUsage = getContextUsage() ?? (contextCompactionEnabled ? serverContextUsage : null);
+
+	// local branch: stats — keep the in-flight message ring in sync
+	$: if (taskIds?.length) {
+		setRunContext(contextUsage?.tokens ?? null, contextUsage?.threshold ?? null);
+	}
 
 	// Local branch: engine telemetry polling for the live stats bar.
 	let enginePollTimer: ReturnType<typeof setInterval> | null = null;

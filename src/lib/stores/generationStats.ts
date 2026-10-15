@@ -11,6 +11,7 @@ import type { EngineActivity, EngineModelActivity } from '$lib/utils/streamTimin
 export type StatsStep = {
 	label: string;
 	startedAt: number;
+	endedAt?: number | null;
 	icon?: string;
 };
 
@@ -25,6 +26,8 @@ export type RunStats = {
 	step: StatsStep | null;
 	steps: StatsStep[];
 	claimedRequestId: string | null;
+	context: number | null;
+	contextThreshold: number | null;
 };
 
 export const runStats = writable<RunStats | null>(null);
@@ -40,8 +43,15 @@ export const beginRun = (messageId: string, modelId: string, urlIdx: number | nu
 		usage: null,
 		step: null,
 		steps: [],
-		claimedRequestId: null
+		claimedRequestId: null,
+		context: null,
+		contextThreshold: null
 	});
+};
+
+// Live context usage pushed from Chat's reactive block while a run is active.
+export const setRunContext = (context: number | null, contextThreshold: number | null) => {
+	runStats.update((run) => (run ? { ...run, context, contextThreshold } : run));
 };
 
 export const endRun = () => {
@@ -56,26 +66,39 @@ export const endRunIf = (messageId: string) => {
 };
 
 // One call per streamed chunk: marks first token, updates token estimate.
+// While a run is active we adopt any message id: WS bridge mode streams
+// under ids different from the one beginRun() stamped at submit time.
 export const noteStreamUpdate = (messageId: string, content: string, usage?: any) => {
 	runStats.update((run) => {
-		if (!run || run.messageId !== messageId) return run;
+		if (!run) return run;
 		const next = { ...run };
+		if (next.messageId !== messageId) {
+			next.messageId = messageId;
+		}
 		if (!next.firstDeltaAt && (content?.length ?? 0) > 0) {
 			next.firstDeltaAt = Date.now();
 		}
-		next.estTokens = estimateTokensFromText(content ?? '');
+		next.estTokens = Math.max(next.estTokens ?? 0, estimateTokensFromText(content ?? ''));
 		if (usage) next.usage = usage;
+		// Real text flowing means we are past any tool/status step; close it.
+		if (content?.length > 0 && next.step && !next.step.endedAt) {
+			next.step = { ...next.step, endedAt: Date.now() };
+		}
 		return next;
 	});
 };
 
 export const noteStep = (messageId: string, label: string, icon?: string) => {
 	runStats.update((run) => {
-		if (!run || run.messageId !== messageId) return run;
+		if (!run) return run;
 		if (!label) return run;
-		if (run.step?.label === label) return run;
+		if (run.step?.label === label && !run.step?.endedAt) return run;
+		const steps = run.steps.map((s) => (s.endedAt ? s : { ...s, endedAt: Date.now() }));
+		if (run.step && !run.step.endedAt) {
+			steps.push({ ...run.step, endedAt: Date.now() });
+		}
 		const step: StatsStep = { label, startedAt: Date.now(), icon };
-		return { ...run, step, steps: [...run.steps, step].slice(-24) };
+		return { ...run, step, steps: steps.slice(-24) };
 	});
 };
 
