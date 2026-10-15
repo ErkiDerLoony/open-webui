@@ -19,9 +19,9 @@ router = APIRouter()
 _ACTIVITY_TIMEOUT = aiohttp.ClientTimeout(total=3)
 
 # Engine detection cache keyed by connection url_idx:
-# (expires_at, admin_root-or-None). Supported engines stay cached for 5 min,
-# unsupported/unreachable connections back off for 30 s.
-_detection_cache: dict[int, tuple[float, str | None]] = {}
+# (expires_at, admin_root-or-None, session-cookie-or-None). Supported engines
+# stay cached for 5 min, unsupported/unreachable connections back off for 30 s.
+_detection_cache: dict[int, tuple[float, str | None, str | None]] = {}
 _POSITIVE_TTL = 300.0
 _NEGATIVE_TTL = 30.0
 
@@ -32,6 +32,36 @@ def _root_url(url: str) -> str:
         if root.endswith(suffix):
             return root[: -len(suffix)]
     return root
+
+
+async def _fetch_activity(session: aiohttp.ClientSession, root: str, headers: dict) -> tuple[int, dict | None]:
+    try:
+        async with session.get(
+            f'{root}/admin/api/activity', headers=headers, ssl=AIOHTTP_CLIENT_SESSION_SSL
+        ) as response:
+            if response.status != 200:
+                return response.status, None
+            return 200, await response.json(loads=JSONCodec.loads)
+    except Exception:
+        return -1, None
+
+
+async def _login_session(session: aiohttp.ClientSession, root: str, key: str) -> str | None:
+    """oMLX accepts the main key as Bearer only from loopback; remote clients
+    (our container) must exchange it for an admin session cookie."""
+    try:
+        async with session.post(
+            f'{root}/admin/api/login',
+            json={'api_key': key, 'remember': True},
+        ) as response:
+            if response.status != 200:
+                return None
+            cookie_value = response.cookies.get('omlx_admin_session')
+            if cookie_value is not None:
+                return f'omlx_admin_session={cookie_value.value}'
+    except Exception:
+        return None
+    return None
 
 
 @router.get('/activity')
@@ -53,36 +83,39 @@ async def get_engine_activity(
         raise HTTPException(status_code=404, detail='Connection not found')
 
     cached = _detection_cache.get(url_idx)
-    if cached and cached[0] >= time.monotonic() and cached[1] is None:
+    cache_valid = bool(cached and cached[0] >= time.monotonic())
+    if cache_valid and cached[1] is None:
         return {'supported': False, 'reason': 'unsupported_engine'}
 
-    root = (cached[1] if cached and cached[0] >= time.monotonic() else None) or _root_url(url)
+    root = (cached[1] if cache_valid else None) or _root_url(url)
+    cookie = cached[2] if (cache_valid and cached[1]) else None
 
     headers = {'Accept': 'application/json', **({'Authorization': f'Bearer {key}'} if key else {})}
+    if cookie:
+        headers['Cookie'] = cookie
 
     try:
         async with aiohttp.ClientSession(timeout=_ACTIVITY_TIMEOUT, trust_env=True) as session:
-            async with session.get(
-                f'{root}/admin/api/activity',
-                headers=headers,
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            ) as response:
-                if response.status == 401:
-                    _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None)
+            status, data = await _fetch_activity(session, root, headers)
+            if status == 401:
+                cookie = await _login_session(session, root, key)
+                if cookie:
+                    headers['Cookie'] = cookie
+                    status, data = await _fetch_activity(session, root, headers)
+                if status == 401:
+                    _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None, None)
                     return {'supported': False, 'reason': 'unauthorized'}
-                if response.status != 200:
-                    _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None)
-                    return {'supported': False, 'reason': f'upstream_{response.status}'}
+            if status != 200:
+                _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None, None)
+                return {'supported': False, 'reason': f'upstream_{status}'}
 
-                data = await response.json(loads=JSONCodec.loads)
+        if not isinstance(data, dict) or 'active_models' not in data:
+            _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None, None)
+            return {'supported': False, 'reason': 'not_omlx'}
+
+        _detection_cache[url_idx] = (time.monotonic() + _POSITIVE_TTL, root, cookie)
+        return {'supported': True, 'url_idx': url_idx, **data}
     except Exception as e:
         log.debug('engine activity probe failed for url_idx=%s: %s', url_idx, e)
-        _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None)
+        _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None, None)
         return {'supported': False, 'reason': 'unreachable'}
-
-    if not isinstance(data, dict) or 'active_models' not in data:
-        _detection_cache[url_idx] = (time.monotonic() + _NEGATIVE_TTL, None)
-        return {'supported': False, 'reason': 'not_omlx'}
-
-    _detection_cache[url_idx] = (time.monotonic() + _POSITIVE_TTL, root)
-    return {'supported': True, 'url_idx': url_idx, **data}
