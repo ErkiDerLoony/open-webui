@@ -114,7 +114,7 @@
 	};
 </script>
 
-<div class="pb-1">
+<div class="mx-auto w-full max-w-[58rem] pb-1">
 	{#if visible && run}
 		<div class="relative">
 			{#if expanded}

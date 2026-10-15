@@ -1624,8 +1624,10 @@
 					}
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
+					noteStreamUpdate(event.message_id ?? message.id, message.content); // local branch: stats
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
+					noteStreamUpdate(event.message_id ?? message.id, message.content); // local branch: stats
 				} else if (type === 'chat:message:voice') {
 					message.meta = { ...message.meta, voice: data.voice };
 				} else if (type === 'chat:message:files' || type === 'files') {
@@ -3436,6 +3438,7 @@
 			if (choices[0]?.message?.content) {
 				// Non-stream response
 				message.content += choices[0]?.message?.content;
+				noteStreamUpdate(message.id, message.content); // local branch: stats
 				if (!shared) dispatchCallOverlayAudio(message);
 			} else {
 				// Stream response
@@ -3444,7 +3447,7 @@
 					console.log('Empty response');
 				} else {
 					message.content += value;
-
+					noteStreamUpdate(message.id, message.content); // local branch: stats
 					if (!shared && navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 						navigator.vibrate(5);
 					}
