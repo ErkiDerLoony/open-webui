@@ -115,7 +115,9 @@ export const claimRequestId = (
 		...(model.waiting ?? []).map((r) => r.request_id)
 	].filter((id): id is string => Boolean(id));
 	if (currentClaim && activeIds.includes(currentClaim)) return currentClaim;
-	return activeIds[0] ?? null;
+	// Only guess when exactly one request is active; with parallel chats on the
+	// same model, guessing would show another chat's prefill/generation stats.
+	return activeIds.length === 1 ? activeIds[0] : null;
 };
 
 export type ClaimedRequestStats = {

@@ -17,6 +17,7 @@ export type StatsStep = {
 
 export type RunStats = {
 	messageId: string;
+	chatId: string | null;
 	modelId: string;
 	urlIdx: number | null;
 	startedAt: number;
@@ -33,9 +34,15 @@ export type RunStats = {
 
 export const runStats = writable<RunStats | null>(null);
 
-export const beginRun = (messageId: string, modelId: string, urlIdx: number | null) => {
+export const beginRun = (
+	messageId: string,
+	modelId: string,
+	urlIdx: number | null,
+	chatId: string | null = null
+) => {
 	runStats.set({
 		messageId,
+		chatId,
 		modelId,
 		urlIdx,
 		startedAt: Date.now(),

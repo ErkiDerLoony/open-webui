@@ -36,6 +36,7 @@
 				cy={size / 2}
 				{r}
 				fill="none"
+				stroke="currentColor"
 				stroke-width={strokeWidth}
 				stroke-linecap="round"
 				stroke-dasharray={circ}

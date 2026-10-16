@@ -3956,7 +3956,7 @@
 
 				// local branch: stats — track the primary response message run
 				if (modelIdx == null && _modelIdx === 0) {
-					beginRun(responseMessageId, model.id, (model as any)?.urlIdx ?? null);
+					beginRun(responseMessageId, model.id, (model as any)?.urlIdx ?? null, $chatId);
 				}
 
 				// Append messageId to childrenIds of parent message
