@@ -186,12 +186,11 @@
 				{/if}
 			</span>
 		{:else}
-			<button
-				type="button"
-				class="rounded-md px-1.5 py-1 text-[11px] leading-none text-gray-400 transition hover:bg-black/5 hover:text-gray-600 dark:hover:bg-white/5 dark:hover:text-gray-300 tabular-nums"
+			<span
+				class="cursor-default px-1.5 py-1 text-[11px] leading-none text-gray-400 dark:text-gray-500 tabular-nums"
 			>
 				{label()}
-			</button>
+			</span>
 		{/if}
 		{#if popoverRows.length > 0}
 			<div

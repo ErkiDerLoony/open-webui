@@ -2778,9 +2778,9 @@
 										{/if}
 
 										<!-- local branch: stats — context usage ring beside send/voice button -->
-										<div class="flex items-center gap-1 mx-1 self-center">
+										<div class="flex items-center gap-1.5 ml-1 mr-2.5 self-center">
 											<ContextRing
-												percent={contextHasThreshold ? contextBarPercent : null}
+												percent={contextBarPercent}
 												size={16}
 												strokeWidth={2}
 												title={contextValue}
