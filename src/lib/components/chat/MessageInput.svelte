@@ -2777,6 +2777,21 @@
 											{/if}
 										{/if}
 
+										<!-- local branch: stats — context usage ring beside send/voice button -->
+										<div class="flex items-center gap-1 mx-1 self-center">
+											<ContextRing
+												percent={contextHasThreshold ? contextBarPercent : null}
+												size={16}
+												strokeWidth={2}
+												title={contextValue}
+											/>
+											{#if contextHasThreshold}
+												<span
+													class="text-[10px] leading-none text-gray-400 dark:text-gray-500 tabular-nums"
+													>{contextBarPercent}%</span
+												>
+											{/if}
+										</div>
 										{#if callEnabled && !embedded && prompt === '' && files.length === 0 && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.call ?? true))}
 											<div class=" flex items-center">
 												<!-- {$i18n.t('Call')} -->
@@ -2858,21 +2873,6 @@
 											</div>
 										{:else}
 											<div class=" flex items-center">
-												<!-- local branch: stats — context usage ring beside send button -->
-												<div class="flex items-center gap-1 mr-1.5 self-center">
-													<ContextRing
-														percent={contextHasThreshold ? contextBarPercent : null}
-														size={16}
-														strokeWidth={2}
-														title={contextValue}
-													/>
-													{#if contextHasThreshold}
-														<span
-															class="text-[10px] leading-none text-gray-400 dark:text-gray-500 tabular-nums"
-															>{contextBarPercent}%</span
-														>
-													{/if}
-												</div>
 												<Tooltip
 													content={uploadPending
 														? $i18n.t('Waiting for upload...')
