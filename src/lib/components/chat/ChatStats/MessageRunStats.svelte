@@ -112,15 +112,25 @@
 		}
 		if (claimed?.phase === 'waiting') return 'queued';
 		if (claimed?.phase === 'generating') return 'generating';
-		// No engine claim yet (activity blocked/slow) — infer from content flow.
-		if (clientRate > 0 || (message?.content ?? '').length > 0) return 'generating';
+		// No engine claim yet (activity blocked/slow) — infer from stream flow
+		// (store estTokens lands even if this component's message prop lags).
+		if (clientRate > 0 || storeTps() > 0 || (message?.content ?? '').length > 0)
+			return 'generating';
 		return 'starting';
 	};
 
+	const storeTps = () => {
+		if (!$runStats?.firstDeltaAt) return 0;
+		const elapsed = (Date.now() - $runStats.firstDeltaAt) / 1000;
+		if (elapsed <= 0) return 0;
+		return ($runStats.estTokens ?? 0) / elapsed;
+	};
+
 	const liveTps = () => {
-		const engine = claimed?.generating?.tokens_per_second;
-		if (engine && engine > 0) return engine;
-		return clientRate;
+		const engine = claimed?.generating?.tokens_per_second ?? 0;
+		const store = storeTps();
+		const rate = Math.max(engine, store, clientRate);
+		return rate > 0 ? rate : 0;
 	};
 
 	const rows = () => {
