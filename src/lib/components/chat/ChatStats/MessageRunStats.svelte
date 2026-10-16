@@ -4,12 +4,15 @@
 	// finished runs show time · t/s in the actions row with a details table.
 	// The context ring lives in the composer (MessageInput) instead.
 	import { onDestroy } from 'svelte';
-	import { runStats, syncEngineClaim } from '$lib/stores/generationStats';
+	import { runStats } from '$lib/stores/generationStats';
 	import {
+		claimRequestId,
 		formatDuration,
 		formatRate,
 		getClaimedRequestStats,
-		getCacheHitPercent
+		getCacheHitPercent,
+		resolveEngineModel,
+		type EngineModelActivity
 	} from '$lib/utils/streamTiming';
 
 	export let message: any = null;
@@ -82,17 +85,59 @@
 			timer = null;
 		}
 	}
+
 	onDestroy(() => {
 		if (timer) clearInterval(timer);
+		if (pollTimer) clearInterval(pollTimer);
 	});
 
 	$: liveSec = live && $runStats ? (nowTick - $runStats.startedAt) / 1000 : 0;
 
-	// Live phase straight from the engine activity mirrored into the store.
-	$: engineModel = live ? syncEngineClaim($runStats?.engineActivity ?? null) : null;
-	$: claimed = engineModel
-		? getClaimedRequestStats(engineModel, $runStats?.claimedRequestId ?? null)
-		: null;
+	// Engine activity is SELF-POLLED here: the Chat.svelte store mirror can be
+	// stale for lazily-mounted message chips (split reactive instances showed
+	// frozen activity), while this component always needs current rows.
+	// Claim stays local — this component never writes runStats (a store write
+	// from a reactive block reading $runStats is a cycle Svelte kills).
+	let engineModel: EngineModelActivity | null = null;
+	let claimedId: string | null = null;
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	const pollActivity = async () => {
+		try {
+			const idx = $runStats?.urlIdx ?? 0;
+			const res = await fetch(`/api/v1/engine/stats/activity?url_idx=${idx}`, {
+				headers: { Authorization: `Bearer ${localStorage.token ?? ''}` }
+			});
+			if (!res.ok) return;
+			const data = await res.json();
+			if (!data?.supported) return;
+			// Prefer our own fresh poll; fall back to Chat.svelte's store copy.
+			engineModel =
+				resolveEngineModel(data, $runStats?.modelId ?? null) ??
+				resolveEngineModel($runStats?.engineActivity, $runStats?.modelId ?? null);
+			claimedId = claimRequestId(engineModel, claimedId);
+			nowTick = Date.now();
+		} catch {
+			// transient errors: keep the last snapshot
+		}
+	};
+
+	$: {
+		if (live) {
+			if (!pollTimer) {
+				engineModel = null;
+				claimedId = null;
+				void pollActivity();
+				pollTimer = setInterval(() => void pollActivity(), 700);
+			}
+		} else if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+			engineModel = null;
+			claimedId = null;
+		}
+	}
+	$: claimed = getClaimedRequestStats(engineModel, claimedId);
 
 	const livePhaseText = () => {
 		if (!live) return '';
@@ -112,8 +157,12 @@
 		}
 		if (claimed?.phase === 'waiting') return 'queued';
 		if (claimed?.phase === 'generating') return 'generating';
-		// No engine claim yet (activity blocked/slow) — infer from stream flow
-		// (store estTokens lands even if this component's message prop lags).
+		// Engine idle while run is live = tools/round-trip gap.
+		if (liveSec > 2) {
+			const st = message?.status;
+			if (st && !st.endedAt && st.eta != null) return 'tooling';
+			return 'thinking';
+		}
 		if (clientRate > 0 || storeTps() > 0 || (message?.content ?? '').length > 0)
 			return 'generating';
 		return 'starting';
@@ -131,6 +180,15 @@
 		const store = storeTps();
 		const rate = Math.max(engine, store, clientRate);
 		return rate > 0 ? rate : 0;
+	};
+
+	const liveChipText = () => {
+		const parts: string[] = [];
+		const phase = livePhaseText();
+		if (phase) parts.push(phase);
+		const tps = liveTps();
+		if (tps > 0) parts.push(`${formatRate(tps)} tok/s`);
+		return parts.join(' · ');
 	};
 
 	const rows = () => {
@@ -176,8 +234,15 @@
 		return items;
 	};
 
-	// Popover must be position:fixed — its ancestors scroll horizontally
-	// (`overflow-x-auto` actions row), which clips absolutely-positioned popovers.
+	// fixed so the actions row's overflow-x:auto can't clip it. Flip to
+	// below-chip near the viewport top; re-anchor once measured.
+	const anchorPop = (rect: DOMRect) => {
+		const below = rect.top < 260;
+		const left = Math.min(Math.max(rect.right - 208, 8), window.innerWidth - 216);
+		popStyle = below
+			? `position:fixed; left:${left}px; top:${rect.bottom + 6}px;`
+			: `position:fixed; left:${left}px; bottom:${window.innerHeight - rect.top + 6}px;`;
+	};
 	let popOpen = false;
 	let popStyle = '';
 
@@ -201,11 +266,19 @@
 	<div
 		class="group inline-flex items-center"
 		on:mouseenter={(e) => {
-			const r = e.currentTarget.getBoundingClientRect();
-			popStyle = `position:fixed; right:${window.innerWidth - r.right}px; bottom:${
-				window.innerHeight - r.top + 4
-			}px;`;
+			const rect = e.currentTarget.getBoundingClientRect();
+			anchorPop(rect);
 			popOpen = true;
+			requestAnimationFrame(() => {
+				const p = document.getElementById('run-stats-popover');
+				if (p) {
+					const below = rect.top < p.offsetHeight + 12;
+					const left = Math.min(Math.max(rect.right - 208, 8), window.innerWidth - 216);
+					popStyle = below
+						? `position:fixed; left:${left}px; top:${rect.bottom + 6}px;`
+						: `position:fixed; left:${left}px; bottom:${window.innerHeight - rect.top + 6}px;`;
+				}
+			});
 		}}
 		on:mouseleave={() => {
 			popOpen = false;
@@ -216,15 +289,9 @@
 				class="flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] leading-none text-gray-400 tabular-nums dark:text-gray-500"
 			>
 				<span class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
-				{formatDuration(liveSec)}
-				{#if livePhaseText()}
-					<span class="text-gray-400 dark:text-gray-500">· {livePhaseText()}</span>
-				{/if}
-				{#if liveTps() > 0}
-					<span class="text-gray-400 dark:text-gray-500">
-						· {formatRate(liveTps())} tok/s
-					</span>
-				{/if}
+				<!-- elapsed + phase + rate in ONE interpolation: the elapsed text
+				     node demonstrably updates, the separate `{#if}` spans did not -->
+				{`${formatDuration(liveSec)} · ${liveChipText()}`}
 			</span>
 		{:else}
 			<span
@@ -235,6 +302,7 @@
 		{/if}
 		{#if popoverRows.length > 0 && popOpen}
 			<div
+				id="run-stats-popover"
 				class="fixed z-30 w-52 rounded-xl border border-gray-100 bg-white p-2.5 text-[11px] shadow-xl dark:border-gray-800 dark:bg-gray-900"
 				style={popStyle}
 			>

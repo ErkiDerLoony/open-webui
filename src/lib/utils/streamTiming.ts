@@ -103,21 +103,31 @@ export const resolveEngineModel = (
 };
 
 // Claim the engine request id for a run: keep the current claim while still
-// active, otherwise take the oldest unclaimed row (native oMLX heuristic).
+// active; otherwise claim the NEWEST active request. OWUI fires background
+// generations (titles, follow-ups, tags) seconds after every reply, so two
+// rows are commonly busy while our own run streams — the current run is the
+// one that just started, which makes `min elapsed` a reliable heuristic and
+// keeps the chip informative instead of frozen on "starting".
 export const claimRequestId = (
 	model: EngineModelActivity | null,
 	currentClaim: string | null
 ): string | null => {
 	if (!model) return null;
-	const activeIds = [
-		...(model.prefilling ?? []).map((r) => r.request_id),
-		...(model.generating ?? []).map((r) => r.request_id),
-		...(model.waiting ?? []).map((r) => r.request_id)
-	].filter((id): id is string => Boolean(id));
-	if (currentClaim && activeIds.includes(currentClaim)) return currentClaim;
-	// Only guess when exactly one request is active; with parallel chats on the
-	// same model, guessing would show another chat's prefill/generation stats.
-	return activeIds.length === 1 ? activeIds[0] : null;
+	const rows = [
+		...(model.prefilling ?? []),
+		...(model.generating ?? []),
+		...(model.waiting ?? [])
+	].filter((r) => Boolean(r.request_id));
+	if (currentClaim && rows.some((r) => r.request_id === currentClaim)) return currentClaim;
+	if (rows.length === 0) return null;
+	if (rows.length === 1) return rows[0].request_id ?? null;
+	const elapsedOf = (r: (typeof rows)[number]): number =>
+		(r as EngineGeneratingRow).elapsed_seconds ??
+		(r as EngineWaitingRow).elapsed_seconds ??
+		(r as EnginePrefillRow).elapsed ??
+		0;
+	const newest = [...rows].sort((a, b) => elapsedOf(a) - elapsedOf(b))[0];
+	return newest.request_id ?? null;
 };
 
 export type ClaimedRequestStats = {
