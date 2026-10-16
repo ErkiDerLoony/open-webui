@@ -2709,6 +2709,24 @@
 									</div>
 									<ModelControls selectedModels={selectedModelIds} />
 
+									<!-- local branch: stats — context ring OUTSIDE the stop/send
+									     branch: the upstream `{#if isActive…}` swaps the send cluster for a
+									     stop button during generation, which used to unmount the ring. -->
+									<div class="flex items-center gap-1.5 ml-1 mr-2 self-center">
+										<ContextRing
+											percent={contextBarPercent}
+											size={16}
+											strokeWidth={2}
+											title={contextValue}
+										/>
+										{#if contextHasThreshold}
+											<span
+												class="text-[10px] leading-none text-gray-400 dark:text-gray-500 tabular-nums"
+												>{contextBarPercent}%</span
+											>
+										{/if}
+									</div>
+
 									{#if isActive && prompt === '' && files.length === 0}
 										<div class=" flex items-center">
 											<Tooltip content={$i18n.t('Stop')}>
@@ -2777,21 +2795,6 @@
 											{/if}
 										{/if}
 
-										<!-- local branch: stats — context usage ring beside send/voice button -->
-										<div class="flex items-center gap-1.5 ml-1 mr-2.5 self-center">
-											<ContextRing
-												percent={contextBarPercent}
-												size={16}
-												strokeWidth={2}
-												title={contextValue}
-											/>
-											{#if contextHasThreshold}
-												<span
-													class="text-[10px] leading-none text-gray-400 dark:text-gray-500 tabular-nums"
-													>{contextBarPercent}%</span
-												>
-											{/if}
-										</div>
 										{#if callEnabled && !embedded && prompt === '' && files.length === 0 && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.call ?? true))}
 											<div class=" flex items-center">
 												<!-- {$i18n.t('Call')} -->

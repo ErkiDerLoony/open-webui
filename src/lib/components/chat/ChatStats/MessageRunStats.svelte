@@ -52,11 +52,29 @@
 
 	let nowTick = Date.now();
 	let timer: ReturnType<typeof setInterval> | null = null;
+	// Client-side fallback rate: count content growth (~4 chars ≈ 1 token) so
+	// tok/s still ticks even when the engine claim is unavailable (e.g. admin
+	// activity blocked). Engine-reported rate always wins when present.
+	let prevContentLen = 0;
+	let prevRateTick = Date.now();
+	let clientRate = 0;
+
 	$: {
 		if (live) {
 			if (!timer) {
+				prevContentLen = (message?.content ?? '').length;
+				prevRateTick = Date.now();
+				clientRate = 0;
 				timer = setInterval(() => {
 					nowTick = Date.now();
+					const len = (message?.content ?? '').length;
+					const dt = (nowTick - prevRateTick) / 1000;
+					if (dt > 0 && len > prevContentLen) {
+						const inst = (len - prevContentLen) / 4 / dt;
+						clientRate = clientRate === 0 ? inst : clientRate * 0.6 + inst * 0.4;
+					}
+					prevContentLen = len;
+					prevRateTick = nowTick;
 				}, 250);
 			}
 		} else if (timer) {
@@ -76,13 +94,6 @@
 		? getClaimedRequestStats(engineModel, $runStats?.claimedRequestId ?? null)
 		: null;
 
-	const clientTps = () => {
-		if (!$runStats?.firstDeltaAt) return 0;
-		const elapsed = (nowTick - $runStats.firstDeltaAt) / 1000;
-		if (elapsed <= 0) return 0;
-		return ($runStats.estTokens ?? 0) / elapsed;
-	};
-
 	const livePhaseText = () => {
 		if (!live) return '';
 		if (engineModel?.is_loading) {
@@ -100,13 +111,16 @@
 			return 'prefilling';
 		}
 		if (claimed?.phase === 'waiting') return 'queued';
-		return '';
+		if (claimed?.phase === 'generating') return 'generating';
+		// No engine claim yet (activity blocked/slow) — infer from content flow.
+		if (clientRate > 0 || (message?.content ?? '').length > 0) return 'generating';
+		return 'starting';
 	};
 
 	const liveTps = () => {
 		const engine = claimed?.generating?.tokens_per_second;
 		if (engine && engine > 0) return engine;
-		return clientTps();
+		return clientRate;
 	};
 
 	const rows = () => {
@@ -152,6 +166,11 @@
 		return items;
 	};
 
+	// Popover must be position:fixed — its ancestors scroll horizontally
+	// (`overflow-x-auto` actions row), which clips absolutely-positioned popovers.
+	let popOpen = false;
+	let popStyle = '';
+
 	$: popoverRows = live ? liveRows() : rows();
 
 	$: visible =
@@ -169,7 +188,19 @@
 </script>
 
 {#if visible}
-	<div class="group relative inline-flex items-center">
+	<div
+		class="group inline-flex items-center"
+		on:mouseenter={(e) => {
+			const r = e.currentTarget.getBoundingClientRect();
+			popStyle = `position:fixed; right:${window.innerWidth - r.right}px; bottom:${
+				window.innerHeight - r.top + 4
+			}px;`;
+			popOpen = true;
+		}}
+		on:mouseleave={() => {
+			popOpen = false;
+		}}
+	>
 		{#if live && $runStats}
 			<span
 				class="flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] leading-none text-gray-400 tabular-nums dark:text-gray-500"
@@ -192,9 +223,10 @@
 				{label()}
 			</span>
 		{/if}
-		{#if popoverRows.length > 0}
+		{#if popoverRows.length > 0 && popOpen}
 			<div
-				class="pointer-events-none absolute bottom-full right-0 z-30 mb-1 hidden w-52 rounded-xl border border-gray-100 bg-white p-2.5 text-[11px] shadow-xl group-hover:block dark:border-gray-800 dark:bg-gray-900"
+				class="fixed z-30 w-52 rounded-xl border border-gray-100 bg-white p-2.5 text-[11px] shadow-xl dark:border-gray-800 dark:bg-gray-900"
+				style={popStyle}
 			>
 				<div class="mb-1.5 font-medium text-gray-700 dark:text-gray-200">
 					{live ? 'Live run' : 'Run details'}
