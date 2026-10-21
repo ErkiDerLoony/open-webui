@@ -62,6 +62,8 @@
 		getWeekday,
 		isRasterImageContentType
 	} from '$lib/utils';
+	// local branch: stats — rich tooltip for the composer context ring
+	import { formatContextTooltipHtml, getCacheHitPercent } from '$lib/utils/streamTiming';
 	import { uploadFile } from '$lib/apis/files';
 	import { getCwd, uploadNewFileToTerminal } from '$lib/apis/terminal';
 	import { generateAutoCompletion } from '$lib/apis';
@@ -565,6 +567,48 @@
 			: `${contextTokens} ${$i18n.t('tokens')}`
 		: $i18n.t('unknown');
 	$: contextBarPercent = contextHasThreshold ? Math.min(contextPercent, 100) : 0;
+
+	// local branch: stats — rich tooltip for the context ring. Window falls
+	// back to the first selected model's context size; cache rows come from
+	// the most recent message that reported cached prompt tokens.
+	let contextWindowModel: any = null;
+	$: contextWindowModel =
+		atSelectedModel ?? $models.find((item) => item.id === selectedModels?.[0]) ?? null;
+	$: contextTooltipWindow =
+		statusContextUsage?.threshold ??
+		contextWindowModel?.info?.params?.num_ctx ??
+		contextWindowModel?.info?.meta?.context_window ??
+		null;
+
+	const getLastCacheUsage = (): any => {
+		if (!history?.currentId) return null;
+		const messages = createMessagesList(history, history.currentId);
+		for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+			const usage = messages[idx]?.usage ?? messages[idx]?.info?.usage;
+			const cached = usage?.prompt_tokens_details?.cached_tokens ?? usage?.cached_tokens ?? null;
+			if (usage && Number(cached) > 0) return usage;
+		}
+		return null;
+	};
+
+	$: contextCacheUsage = history?.currentId ? getLastCacheUsage() : null;
+	// Engine-reported usage counts as measured; getLocalContextUsage tags
+	// its own output 'estimated' (anything else is server/engine data).
+	$: contextTooltipSource = statusContextUsage
+		? statusContextUsage.source === 'estimated'
+			? 'estimated'
+			: 'measured'
+		: null;
+	$: contextTooltipHtml = formatContextTooltipHtml(statusContextUsage, {
+		threshold: contextTooltipWindow,
+		cached:
+			contextCacheUsage?.prompt_tokens_details?.cached_tokens ??
+			contextCacheUsage?.cached_tokens ??
+			null,
+		prompt: contextCacheUsage?.prompt_tokens ?? contextCacheUsage?.input_tokens ?? null,
+		cachedPct: getCacheHitPercent(contextCacheUsage),
+		source: contextTooltipSource
+	});
 
 	const getCommand = () => {
 		const chatInput = document.getElementById('chat-input');
@@ -2713,12 +2757,18 @@
 									     branch: the upstream `{#if isActive…}` swaps the send cluster for a
 									     stop button during generation, which used to unmount the ring. -->
 									<div class="flex items-center gap-1.5 ml-1 mr-2 self-center">
-										<ContextRing
-											percent={contextBarPercent}
-											size={16}
-											strokeWidth={2}
-											title={contextValue}
-										/>
+										<Tooltip
+											content={contextTooltipHtml}
+											placement="top"
+											className="flex items-center"
+										>
+											<ContextRing
+												percent={contextBarPercent}
+												size={16}
+												strokeWidth={2}
+												ariaLabel={contextValue}
+											/>
+										</Tooltip>
 										{#if contextHasThreshold}
 											<span
 												class="text-[10px] leading-none text-gray-400 dark:text-gray-500 tabular-nums"

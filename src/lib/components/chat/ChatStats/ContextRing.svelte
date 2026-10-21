@@ -5,11 +5,16 @@
 	export let size = 14;
 	export let strokeWidth = 2;
 	export let title = '';
+	// Local branch: optional aria-label override (the composer ring uses a
+	// tippy tooltip instead of the native title); falls back to title so
+	// existing consumers (ChatStatsBar) keep working unchanged.
+	export let ariaLabel = '';
 
 	$: r = (size - strokeWidth) / 2;
 	$: circ = 2 * Math.PI * r;
 	$: pct = percent === null ? null : Math.min(100, Math.max(0, percent));
 	$: offset = pct === null ? circ : circ * (1 - pct / 100);
+	$: accessibleName = ariaLabel || title;
 	$: color =
 		pct === null
 			? 'text-gray-300 dark:text-gray-600'
@@ -21,7 +26,11 @@
 </script>
 
 {#if pct !== null}
-	<span class="inline-flex shrink-0 items-center" {title}>
+	<span
+		class="inline-flex shrink-0 items-center"
+		aria-label={accessibleName || undefined}
+		{...title ? { title } : {}}
+	>
 		<svg width={size} height={size} viewBox="0 0 {size} {size}" class="-rotate-90">
 			<circle
 				cx={size / 2}

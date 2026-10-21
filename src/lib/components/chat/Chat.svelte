@@ -53,7 +53,7 @@
 	// Local branch: live inference stats (ChatStats)
 	import {
 		beginRun,
-		endRun,
+		endRunForChat,
 		endRunIf,
 		noteOutputEvent,
 		noteStatus,
@@ -362,7 +362,7 @@
 
 	// local branch: stats — keep the in-flight message ring in sync
 	$: if (taskIds?.length) {
-		setRunContext(contextUsage?.tokens ?? null, contextUsage?.threshold ?? null);
+		setRunContext(contextUsage?.tokens ?? null, contextUsage?.threshold ?? null, $chatId);
 	}
 
 	// Local branch: engine telemetry polling for the live stats bar.
@@ -385,11 +385,11 @@
 		if (res?.supported) {
 			engineUnsupportedUntil[idx] = 0;
 			engineActivity = res;
-			setEngineActivity(res); // local branch: stats (inline chips read it from the store)
+			setEngineActivity(res, $chatId); // local branch: stats (inline chips read it from the store)
 		} else {
 			engineUnsupportedUntil[idx] = Date.now() + 30000;
 			engineActivity = null;
-			setEngineActivity(null); // local branch: stats
+			setEngineActivity(null, $chatId); // local branch: stats
 		}
 	};
 
@@ -1587,7 +1587,8 @@
 				} else if (type === 'chat:active') {
 					if (!data?.active) {
 						taskIds = null;
-						endRun(); // local branch: stats (whole chat went idle)
+						// local branch: stats: THIS chat went idle — other chats keep running
+						endRunForChat(event.chat_id ?? $chatId);
 						if (
 							$chatId &&
 							!$temporaryChatEnabled &&
@@ -1632,10 +1633,20 @@
 					}
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
-					noteStreamUpdate(event.message_id ?? message.id, message.content); // local branch: stats
+					noteStreamUpdate(
+						event.message_id ?? message.id,
+						message.content,
+						undefined,
+						event.chat_id ?? $chatId
+					); // local branch: stats
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
-					noteStreamUpdate(event.message_id ?? message.id, message.content); // local branch: stats
+					noteStreamUpdate(
+						event.message_id ?? message.id,
+						message.content,
+						undefined,
+						event.chat_id ?? $chatId
+					); // local branch: stats
 				} else if (type === 'chat:message:voice') {
 					message.meta = { ...message.meta, voice: data.voice };
 				} else if (type === 'chat:message:files' || type === 'files') {
@@ -1991,6 +2002,9 @@
 
 		return () => {
 			try {
+				// local branch: stats — capture the chat we're leaving; chatId is
+				// cleared below, and endRunForChat() must not clear other chats' runs
+				const leavingChatId = $chatId || chatIdProp;
 				cancelBrowserInteractions();
 				clearTimeout(saveControlsTimer);
 				saveControls();
@@ -2026,7 +2040,7 @@
 					clearInterval(enginePollTimer);
 					enginePollTimer = null;
 				}
-				endRun();
+				endRunForChat(leavingChatId);
 			} catch (e) {
 				console.error(e);
 			}
@@ -3400,7 +3414,7 @@
 			const value = data.delta ?? '';
 			if (!(message.content == '' && value == '\n')) {
 				message.content += value;
-				noteStreamUpdate(message.id, message.content); // local branch: stats
+				noteStreamUpdate(message.id, message.content, undefined, $chatId); // local branch: stats
 
 				if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 					navigator.vibrate(5);
@@ -3446,7 +3460,7 @@
 			if (choices[0]?.message?.content) {
 				// Non-stream response
 				message.content += choices[0]?.message?.content;
-				noteStreamUpdate(message.id, message.content); // local branch: stats
+				noteStreamUpdate(message.id, message.content, undefined, chatId); // local branch: stats
 				if (!shared) dispatchCallOverlayAudio(message);
 			} else {
 				// Stream response
@@ -3455,7 +3469,7 @@
 					console.log('Empty response');
 				} else {
 					message.content += value;
-					noteStreamUpdate(message.id, message.content); // local branch: stats
+					noteStreamUpdate(message.id, message.content, undefined, chatId); // local branch: stats
 					if (!shared && navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 						navigator.vibrate(5);
 					}
@@ -3484,7 +3498,7 @@
 		}
 
 		if (!shared) {
-			noteStreamUpdate(message.id, message.content ?? '', usage); // local branch: stats
+			noteStreamUpdate(message.id, message.content ?? '', usage, chatId); // local branch: stats
 		}
 
 		history.messages[message.id] = message;

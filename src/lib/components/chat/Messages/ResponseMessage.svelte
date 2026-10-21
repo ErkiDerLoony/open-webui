@@ -678,7 +678,7 @@
 
 {#key message.id}
 	<div
-		class=" flex w-full message-{message.id}"
+		class=" flex w-full message-{message.id} group"
 		id="message-{message.id}"
 		dir={$settings.chatDirection}
 		style="scroll-margin-top: 3rem;"
@@ -912,7 +912,7 @@
 									<span
 										class="inline-block w-[0.125rem] h-3.5 bg-gray-400 dark:bg-gray-500 ml-0.5 animate-cursor-pulse align-text-bottom"
 									></span>
-									<MessageRunStats {message} />
+									<MessageRunStats {message} {chatId} />
 								</div>
 							{/if}
 
@@ -1221,7 +1221,11 @@
 								{/if}
 
 								{#if message.done}
-									<MessageRunStats {message} />
+									<span
+										class={isLastMessage || ($settings?.highContrastMode ?? false)
+											? 'visible'
+											: 'hover-reveal'}><MessageRunStats {message} {chatId} /></span
+									>
 								{/if}
 
 								{#if message.usage}

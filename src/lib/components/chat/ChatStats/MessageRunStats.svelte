@@ -4,18 +4,28 @@
 	// finished runs show time · t/s in the actions row with a details table.
 	// The context ring lives in the composer (MessageInput) instead.
 	import { onDestroy } from 'svelte';
-	import { runStats } from '$lib/stores/generationStats';
+	import { runs, type RunStats } from '$lib/stores/generationStats';
 	import {
 		claimRequestId,
 		formatDuration,
 		formatRate,
 		getClaimedRequestStats,
 		getCacheHitPercent,
+		getEnginePhase,
 		resolveEngineModel,
 		type EngineModelActivity
 	} from '$lib/utils/streamTiming';
 
 	export let message: any = null;
+	export let chatId: string | null = null;
+
+	// Each chip reads ITS OWN run out of the message-keyed registry: several chats
+	// can generate at once and a chip must never borrow another chat's numbers.
+	// Subscribing to the registry once (rather than a per-message derived store)
+	// means a mid-flight message.id re-key, or a chip mounting mid-stream, finds
+	// the right entry with no resubscribe churn.
+	let run: RunStats | null = null;
+	const unsubscribeRuns = runs.subscribe((r) => (run = r[message?.id] ?? null));
 
 	$: usage = message?.usage ?? null;
 	$: timing = usage?.timing ?? null;
@@ -50,8 +60,8 @@
 
 	$: cachedTokens = usage?.prompt_tokens_details?.cached_tokens ?? usage?.cached_tokens ?? 0;
 
-	// In-flight view when the live run belongs to this message.
-	$: live = $runStats && $runStats.messageId === message?.id && !(message?.done ?? false);
+	// In-flight view while THIS message has an open run in the registry.
+	$: live = !!run && !(message?.done ?? false);
 
 	let nowTick = Date.now();
 	let timer: ReturnType<typeof setInterval> | null = null;
@@ -87,35 +97,52 @@
 	}
 
 	onDestroy(() => {
+		unsubscribeRuns();
 		if (timer) clearInterval(timer);
 		if (pollTimer) clearInterval(pollTimer);
 	});
 
-	$: liveSec = live && $runStats ? (nowTick - $runStats.startedAt) / 1000 : 0;
+	$: liveSec = live && run ? (nowTick - run.startedAt) / 1000 : 0;
 
 	// Engine activity is SELF-POLLED here: the Chat.svelte store mirror can be
 	// stale for lazily-mounted message chips (split reactive instances showed
 	// frozen activity), while this component always needs current rows.
-	// Claim stays local — this component never writes runStats (a store write
-	// from a reactive block reading $runStats is a cycle Svelte kills).
+	// Claim stays local — this component never writes the run registry (a store
+	// write from a reactive block reading it is a cycle Svelte kills).
 	let engineModel: EngineModelActivity | null = null;
 	let claimedId: string | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	// Console dump of the raw activity payload once per run when
+	// localStorage.owui.statsDebug === '1' (reset when the run ends).
+	let loggedActivity = false;
 
 	const pollActivity = async () => {
 		try {
-			const idx = $runStats?.urlIdx ?? 0;
+			const r = run;
+			const idx = r?.urlIdx ?? 0;
 			const res = await fetch(`/api/v1/engine/stats/activity?url_idx=${idx}`, {
 				headers: { Authorization: `Bearer ${localStorage.token ?? ''}` }
 			});
 			if (!res.ok) return;
 			const data = await res.json();
+			if (!loggedActivity && localStorage.getItem('owui.statsDebug') === '1') {
+				console.log('[run-stats]', chatId ?? '', message?.id ?? '', JSON.stringify(data));
+				loggedActivity = true;
+			}
 			if (!data?.supported) return;
 			// Prefer our own fresh poll; fall back to Chat.svelte's store copy.
-			engineModel =
-				resolveEngineModel(data, $runStats?.modelId ?? null) ??
-				resolveEngineModel($runStats?.engineActivity, $runStats?.modelId ?? null);
+			// The store mirror can lag by a tick, so when the fresh snapshot has
+			// no live rows but the mirror still does, trust the mirror.
+			const fresh = resolveEngineModel(data, r?.modelId ?? null);
+			const mirrored = resolveEngineModel(r?.engineActivity, r?.modelId ?? null);
+			const hasRows = (m: EngineModelActivity | null) =>
+				!!m &&
+				(m.prefilling?.length ?? 0) + (m.generating?.length ?? 0) + (m.waiting?.length ?? 0) > 0;
+			engineModel = hasRows(fresh) ? fresh : hasRows(mirrored) ? mirrored : (fresh ?? mirrored);
 			claimedId = claimRequestId(engineModel, claimedId);
+			// Drop stale claims so phase falls back to the positional pick
+			// inside getClaimedRequestStats / getEnginePhase.
+			if (claimedId && !getClaimedRequestStats(engineModel, claimedId)) claimedId = null;
 			nowTick = Date.now();
 		} catch {
 			// transient errors: keep the last snapshot
@@ -127,6 +154,7 @@
 			if (!pollTimer) {
 				engineModel = null;
 				claimedId = null;
+				loggedActivity = false;
 				void pollActivity();
 				pollTimer = setInterval(() => void pollActivity(), 700);
 			}
@@ -135,50 +163,104 @@
 			pollTimer = null;
 			engineModel = null;
 			claimedId = null;
+			loggedActivity = false;
 		}
 	}
 	$: claimed = getClaimedRequestStats(engineModel, claimedId);
+	// Merged engine view: id-matched claim first, positional pick when the
+	// rows carry no request_id (claimRequestId then hands back a synthetic
+	// claim, and getEnginePhase covers a model resolved mid-poll).
+	$: view = claimed ?? getEnginePhase(engineModel);
+
+	// Active backend status/event text for this run ('' when the backend has
+	// sent none). Reasoning-flavoured statuses map to the reasoning word.
+	const backendStatusText = () => {
+		const st = message?.status;
+		if (!st || st.done || st.endedAt) return '';
+		const d = st.description;
+		const text =
+			typeof d === 'string' ? d : Array.isArray(d) ? d.map((p: any) => p?.text ?? '').join('') : '';
+		const label = `${text || st.action || run?.step?.label || ''}`.toLowerCase().trim();
+		if (!label) return 'tooling';
+		if (label.includes('think')) return 'thinking';
+		return label.length > 28 ? `${label.slice(0, 27)}…` : label;
+	};
+
+	// Any signal the backend has produced for this run yet — the gate that
+	// keeps the idle-phase word off the chip until the server has started.
+	const backendSeen = () =>
+		!!run?.firstDeltaAt ||
+		(message?.content ?? '').length > 0 ||
+		!!message?.status ||
+		!!engineModel?.is_loading ||
+		view.phase !== 'idle';
 
 	const livePhaseText = () => {
 		if (!live) return '';
-		if (engineModel?.is_loading) {
-			const eta =
-				engineModel.loading_remaining_seconds_estimate ??
-				engineModel.loading_estimated_seconds ??
-				null;
-			return `loading${eta ? ` ~${Math.ceil(eta)}s` : ''}`;
+
+		// 1) Model still loading — the row can be absent from the snapshot
+		//    until resident; resolveEngineModel synthesizes it.
+		if (engineModel?.is_loading || view.phase === 'loading') {
+			const elapsed = engineModel?.loading_elapsed_seconds ?? null;
+			const estimate = engineModel?.loading_estimated_seconds ?? null;
+			const remaining = engineModel?.loading_remaining_seconds_estimate ?? null;
+			if (estimate && elapsed !== null) {
+				const pct = Math.min(99, Math.max(1, Math.round((elapsed / estimate) * 100)));
+				const eta = remaining ?? Math.max(0, estimate - elapsed);
+				return `loading model ${pct}%${eta > 0 ? ` ~${Math.ceil(eta)}s` : ''}`;
+			}
+			const eta = remaining ?? estimate ?? null;
+			return `loading model${eta ? ` ~${Math.ceil(eta)}s` : ''}`;
 		}
-		if (claimed?.phase === 'prefilling') {
-			const p = claimed.prefill;
+
+		// 2) Queued behind other requests.
+		if (view.phase === 'waiting') {
+			const pos = view.waiting?.queue_position ?? 0;
+			return pos > 0 ? `queued #${pos}` : 'queued';
+		}
+
+		// 3) Prefilling the prompt — percent when the engine reports progress.
+		if (view.phase === 'prefilling') {
+			const p = view.prefill;
 			if (p?.total) {
 				return `prefill ${Math.min(99, Math.max(1, Math.round(((p.processed ?? 0) / p.total) * 100)))}%`;
 			}
 			return 'prefilling';
 		}
-		if (claimed?.phase === 'waiting') return 'queued';
-		if (claimed?.phase === 'generating') return 'generating';
-		// Engine idle while run is live = tools/round-trip gap.
-		if (liveSec > 2) {
-			const st = message?.status;
-			if (st && !st.endedAt && st.eta != null) return 'tooling';
-			return 'thinking';
-		}
-		if (clientRate > 0 || storeTps() > 0 || (message?.content ?? '').length > 0)
-			return 'generating';
-		return 'starting';
+
+		// 4) Backend status/event for this run (tools, retrieval, reasoning…).
+		const status = backendStatusText();
+		if (status) return status;
+
+		// 5) Engine decoding — tok/s on the chip speaks for itself.
+		if (view.phase === 'generating')
+			return (view.generating?.tokens_per_second ?? 0) > 0 ? '' : 'generating';
+
+		// 6) Tokens flowing client-side without an engine row match.
+		if (liveTps() > 0) return '';
+		if ((message?.content ?? '').length > 0) return 'generating';
+
+		// 7) Engine idle mid-run (round-trip/tool gap) — only once the
+		//    backend has produced its first signal.
+		if (liveSec > 2 && backendSeen()) return 'thinking';
+
+		// 8) Cold start: submitted, nothing back from the backend yet.
+		return 'loading';
 	};
 
 	const storeTps = () => {
-		if (!$runStats?.firstDeltaAt) return 0;
-		const elapsed = (Date.now() - $runStats.firstDeltaAt) / 1000;
+		if (!run?.firstDeltaAt) return 0;
+		const elapsed = (Date.now() - run.firstDeltaAt) / 1000;
 		if (elapsed <= 0) return 0;
-		return ($runStats.estTokens ?? 0) / elapsed;
+		return (run.estTokens ?? 0) / elapsed;
 	};
 
 	const liveTps = () => {
-		const engine = claimed?.generating?.tokens_per_second ?? 0;
-		const store = storeTps();
-		const rate = Math.max(engine, store, clientRate);
+		// Prefill speed is the honest rate while the prompt is being eaten —
+		// a decode number from a concurrent request would lie on this chip.
+		if (view.phase === 'prefilling') return view.prefill?.speed ?? 0;
+		const engine = view.phase === 'generating' ? (view.generating?.tokens_per_second ?? 0) : 0;
+		const rate = Math.max(engine, storeTps(), clientRate);
 		return rate > 0 ? rate : 0;
 	};
 
@@ -209,26 +291,27 @@
 	const liveRows = () => {
 		const items: Array<[string, string]> = [];
 		items.push(['Run time', formatDuration(liveSec)]);
-		const phase = livePhaseText();
+		const phase = livePhaseText() || (view.phase !== 'idle' ? view.phase : '');
 		if (phase) items.push(['Phase', phase]);
 		const tps = liveTps();
-		if (tps > 0) items.push(['Decode speed', `${formatRate(tps)} tok/s`]);
-		if ($runStats?.firstDeltaAt) {
+		if (tps > 0)
 			items.push([
-				'First token',
-				formatDuration(($runStats.firstDeltaAt - $runStats.startedAt) / 1000)
+				view.phase === 'prefilling' ? 'Prefill speed' : 'Decode speed',
+				`${formatRate(tps)} tok/s`
 			]);
+		if (run?.firstDeltaAt) {
+			items.push(['First token', formatDuration((run.firstDeltaAt - run.startedAt) / 1000)]);
 		}
-		if ($runStats?.estTokens) items.push(['Tokens so far', $runStats.estTokens.toLocaleString()]);
-		if (claimed?.prefill?.total) {
+		if (run?.estTokens) items.push(['Tokens so far', run.estTokens.toLocaleString()]);
+		if (view.prefill?.total) {
 			items.push([
 				'Prefill',
-				`${(claimed.prefill.processed ?? 0).toLocaleString()}/${claimed.prefill.total.toLocaleString()}`
+				`${(view.prefill.processed ?? 0).toLocaleString()}/${view.prefill.total.toLocaleString()}`
 			]);
 		}
 		const waiting =
 			engineModel?.waiting_requests ??
-			$runStats?.engineActivity?.active_models?.total_waiting_requests ??
+			run?.engineActivity?.active_models?.total_waiting_requests ??
 			0;
 		if (waiting > 0) items.push(['Queue', `${waiting} waiting`]);
 		return items;
@@ -284,7 +367,7 @@
 			popOpen = false;
 		}}
 	>
-		{#if live && $runStats}
+		{#if live && run}
 			<span
 				class="flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] leading-none text-gray-400 tabular-nums dark:text-gray-500"
 			>
