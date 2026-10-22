@@ -2,32 +2,34 @@
 
 ## Goal
 `docker run` failed with `exec format error` (arm64 image on amd64 host).
-Rebuild and publish **linux/amd64 only, for now**, for version 0.12.1
-(floating `0.12.1-stats` tag must point at amd64). Update `AGENTS.md` so
-future builds default to amd64-only and the failure signature is documented.
+Rebuild + publish **linux/amd64 only, for now**, version 0.12.1
+(floating `0.12.1-stats` tag must point at amd64). Record amd64-only build rule in `AGENTS.md`.
 
 ## Hard constraints
-- NO arm64 build this cycle ("only for now" — operator decision).
-- Mitmca build-context is mandatory: `--build-context mitmca=$HOME/mitmca-context`.
+- NO arm64 builds this cycle (operator decision).
+- Mitmca build-context mandatory for every build: `--build-context mitmca=$HOME/mitmca-context`.
 - Registry push by IP `10.10.10.10:5000` (OrbStack DNS workaround).
 - WP-BUILD edits no repo files; WP-DOCS edits only `AGENTS.md`.
 
 ## Packages
 | id | scope | acceptance | depends_on | status |
 |----|-------|------------|------------|--------|
-| WP-BUILD | build/push amd64 image + retag floating tag | arch=amd64 inspect; smoke run boots; pushed tags resolve | — | dispatched |
-| WP-DOCS | AGENTS.md §"Local image builds & push" + create STATE.md | amd64-only stated; cmds carry --platform + mitmca; exec-format-error note; diff confined to these 2 files | — | dispatched |
-| WP-TEST | verification gate on WP-BUILD | rerun inspect/run/manifest checks | WP-BUILD | pending |
-| WP-REVIEW | review gate on WP-DOCS diff | diff confined; content matches acceptance | WP-DOCS | pending |
+| WP-BUILD | build/push amd64 image + retag floating tag | arch=amd64; boots; pushed tags resolve | — | accepted* |
+| WP-DOCS | AGENTS.md §"Local image builds & push" | amd64-only rule; --platform+mitmca in every cmd; exec-format-error note; diff confined | — | pending-recheck |
+| WP-DOCS-FIX | STATE.md only: add mitmca flag to buildx fallback; refresh statuses/verdict log | reviewer finding closed in new commit | WP-DOCS | dispatched |
+| WP-TEST | docker runtime gate | unrunnable — docker CLI not on tester allowlist | WP-BUILD | blocked |
 
-## Serialization order
-WP-BUILD ∥ WP-DOCS (zero-file vs AGENTS.md — non-overlapping).
-WP-TEST after WP-BUILD. WP-REVIEW after WP-DOCS.
+\*accepted on operator confirmation ("build successful, running now"); independent tool gate unavailable — see Decisions.
 
 ## Verdict log
-(empty)
+- 2026-10-22 WP-REVIEW: REJECT — single defect: buildx fallback lacked mandatory mitmca context (STATE.md); AGENTS.md section items 2–8 PASS. Fixed via WP-DOCS-FIX, resubmit for accept.
+- 2026-10-22 WP-TEST (two attempts, incl. model swap to Qwen): BLOCKED — docker CLI absent from tester allowlist.
+
+## Serialization order
+WP-BUILD ∥ WP-DOCS → WP-DOCS-FIX → reviewer recheck. No file overlap.
 
 ## Decisions
-- Floating `0.12.1-stats` retagged to amd64 locally and in registry (amd64-only cycle).
-- `latest` tag untouched.
-- Cross-build via `docker build --platform linux/amd64`; fallback `buildx build --platform linux/amd64 --load`.
+- Floating `0.12.1-stats` retagged to amd64 locally + in registry (amd64-only cycle); `latest` untouched.
+- Cross-build: `docker build --platform linux/amd64 --build-context mitmca=$HOME/mitmca-context`; fallback `docker buildx build --platform linux/amd64 --build-context mitmca=$HOME/mitmca-context --load`.
+- Build executed directly by operator after memory guard killed coder session; accepted on operator confirmation.
+- Tool gap: add `docker ps`, `docker image inspect`, `docker manifest inspect` to tester allowlist to restore docker gates.
