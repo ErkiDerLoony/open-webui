@@ -234,11 +234,43 @@ export const getCacheHitPercent = (usage: any): number | null => {
 	return Math.min(100, Math.round((cached / prompt) * 100));
 };
 
+// Resolve a raw provider duration to milliseconds without trusting its unit.
+// Providers disagree: ollama-native prompt_eval_duration/eval_duration are
+// nanoseconds, while the oMLX/openai-compatible path supplies seconds (~1.79).
+// Candidates ns→µs→s in order; the first candidate that is finite, positive,
+// and — when a token count is supplied — implies a plausible token rate
+// (≤ 100_000 tok/s) wins. Blind /1e6 math shrinks 1.79s to 1.79e-6 ms and
+// yields ~1e13 tok/s garbage; the plausibility guard rejects that scale and
+// falls through to the correct one.
+export const resolveDurationMs = (
+	raw: number | null | undefined,
+	tokens?: number | null
+): number | null => {
+	if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return null;
+	const knownTokens = typeof tokens === 'number' && Number.isFinite(tokens) && tokens > 0;
+	for (const ms of [raw / 1_000_000, raw / 1_000, raw * 1_000]) {
+		if (!Number.isFinite(ms) || ms <= 0) continue;
+		if (knownTokens) {
+			const impliedTps = ((tokens as number) / ms) * 1000;
+			if (!Number.isFinite(impliedTps) || impliedTps > 100_000) continue;
+		}
+		return ms;
+	}
+	return null;
+};
+
 // Pretty HTML table for message usage tooltips (local branch: stats).
 export const formatUsageTooltipHtml = (usage: any): string => {
 	if (!usage || typeof usage !== 'object') return '';
 	const rows: Array<[string, string]> = [];
 	const num = (v: any) => (typeof v === 'number' && isFinite(v) ? v : null);
+	// Derive tok/s from a raw provider phase duration whose unit is unknown
+	// (ollama ns vs oMLX s) — resolveDurationMs picks the scale.
+	const rateFromDuration = (tokens: number | null, rawDuration: any): number | null => {
+		if (tokens === null || tokens <= 0) return null;
+		const ms = resolveDurationMs(num(rawDuration), tokens);
+		return ms === null ? null : (tokens / ms) * 1000;
+	};
 	const prompt = num(usage.prompt_tokens ?? usage.input_tokens ?? usage.prompt_eval_count);
 	const completion = num(usage.completion_tokens ?? usage.output_tokens ?? usage.eval_count);
 	const total = num(usage.total_tokens ?? usage.total_generated_tokens);
@@ -246,18 +278,13 @@ export const formatUsageTooltipHtml = (usage: any): string => {
 	const ttft = num(usage.timing?.ttft ?? usage.time_to_first_token);
 	const thinking = num(usage.timing?.thinking_time);
 	const totalT = num(usage.timing?.total_time ?? usage.total_time);
-	const prefillTps = num(usage.prompt_tokens_per_second ?? usage.prompt_eval_per_second);
-	const genTps = num(
-		(usage.generation_tokens_per_second ??
-			usage.completion_tokens_per_second ??
-			usage.eval_duration)
-			? num(usage.completion_tokens ?? usage.output_tokens) != null && num(usage.eval_duration)
-				? ((num(usage.completion_tokens ?? usage.output_tokens) as number) /
-						(num(usage.eval_duration) as number)) *
-					1_000_000
-				: null
-			: null
-	);
+	// Backend-provided rates win; only fall back to derived-from-duration.
+	const prefillTps =
+		num(usage.prompt_tokens_per_second ?? usage.prompt_eval_per_second) ??
+		rateFromDuration(prompt, usage.prompt_eval_duration);
+	const genTps =
+		num(usage.generation_tokens_per_second ?? usage.completion_tokens_per_second) ??
+		rateFromDuration(completion, usage.eval_duration);
 	if (prompt) rows.push(['Prompt tokens', prompt.toLocaleString()]);
 	if (completion) rows.push(['Completion tokens', completion.toLocaleString()]);
 	if (total) rows.push(['Total tokens', total.toLocaleString()]);
