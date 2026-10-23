@@ -546,8 +546,9 @@
 	};
 
 	$: contextCacheUsage = history?.currentId ? getLastCacheUsage() : null;
-	// Engine-reported usage counts as measured; getLocalContextUsage tags
-	// its own output 'estimated' (anything else is server/engine data).
+	// Checkpoint-backed local results and server/engine usage report 'measured';
+	// pure client estimation reports 'estimated' (anything non-'estimated'
+	// renders with the measured label).
 	$: contextTooltipSource = statusContextUsage
 		? statusContextUsage.source === 'estimated'
 			? 'estimated'

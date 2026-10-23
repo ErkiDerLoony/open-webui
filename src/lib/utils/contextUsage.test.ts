@@ -182,3 +182,37 @@ describe('context ring usage (CR-01..CR-08)', () => {
 		expect(usage!.tokens).toBeGreaterThan(estimateMessagesTokens([messages[3]]));
 	});
 });
+
+describe('context ring source label', () => {
+	it('source: measured checkpoint vs estimated fallback', () => {
+		// Valid prompt-side checkpoint supplies the numerator → measured.
+		const checkpointMessages = [
+			{ role: 'user', content: para(500) },
+			{
+				role: 'assistant',
+				content: para(200),
+				usage: { prompt_tokens: 4000, completion_tokens: 300 }
+			}
+		];
+		const measured = computeContextUsage({
+			messages: checkpointMessages,
+			systemText: '',
+			threshold: null
+		});
+		expect(measured).not.toBeNull();
+		expect(measured!.source).toBe('measured');
+
+		// No valid checkpoint (completion-only, #R2) → pure estimation.
+		const estimatedMessages = [
+			{ role: 'user', content: para(500) },
+			{ role: 'assistant', content: para(200), usage: { completion_tokens: 650 } }
+		];
+		const estimated = computeContextUsage({
+			messages: estimatedMessages,
+			systemText: '',
+			threshold: null
+		});
+		expect(estimated).not.toBeNull();
+		expect(estimated!.source).toBe('estimated');
+	});
+});

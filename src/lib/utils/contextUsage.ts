@@ -164,6 +164,10 @@ export const computeContextUsage = (input: {
 	const activeMessages = messages.slice(startIdx);
 
 	let tokens = systemTokens + summaryTokens + estimateMessagesTokens(activeMessages);
+	// Truthful provenance for the ring label: 'measured' when a provider-reported
+	// usage checkpoint supplies the numerator, 'estimated' for pure length/4
+	// estimation. Consumers map non-'estimated' sources to a measured label.
+	let source = 'estimated';
 
 	for (let idx = activeMessages.length - 1; idx >= 0; idx -= 1) {
 		const message = activeMessages[idx];
@@ -172,6 +176,7 @@ export const computeContextUsage = (input: {
 		const checkpointTokens = getUsageTokenCount(usage);
 		if (checkpointTokens > 0) {
 			tokens = checkpointTokens + estimateMessagesTokens(activeMessages.slice(idx + 1));
+			source = 'measured';
 			break;
 		}
 	}
@@ -196,6 +201,6 @@ export const computeContextUsage = (input: {
 		threshold,
 		denominator,
 		percent: denominator !== null ? clampPercent(tokens, denominator) : null,
-		source: 'estimated'
+		source
 	};
 };

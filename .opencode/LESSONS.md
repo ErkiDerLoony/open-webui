@@ -1,0 +1,1 @@
+L1 | 2026-10-23 | tester shell denied wholesale; behavioral gates unrunnable for 2 epics running (prior: docker CLI allowlist gap) | tester permission config lacked shell/tool grants | operator grants tester allowlist (npx vitest, npm run test:frontend, npx prettier --check, git log); director logs waivers explicitly when gates unrunnable | resolved-operator
