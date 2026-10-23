@@ -1,33 +1,25 @@
-# STATE — context ring fix + backend hardening (2026-10-23) — CLOSED
+# STATE — image rebuild 0.12.1-stats amd64 (2026-10-24) — CLOSED
 
 ## Goal
-Context ring showed "650 tokens (1%)" on long chats (fixed prior cycle, commits 0a768e08d/c04c5cde3/c73925b24). This cycle: restore backend gate toolchain via mise (L2), resolve L6, harden backend usage paths (R9/R10), clear response.py style debt.
+Ship repo tip 7d043cb7e (context-ring fixes + backend hardening) as open-webui:0.12.1-stats-amd64 + floating 0.12.1-stats at 10.10.10.10:5000. DONE — image also live per operator ("new image started").
+
+## Artifacts (gate-verified)
+- Registry digest (both tags): sha256:bc872ee563931d829e210fc9360ce8079a945090cd65928cae7ab4a6e00f62df (manifest 4288B)
+- Image config Id: sha256:0482daa5e61f…, linux/amd64, 19 layers; floating tag == amd64 build.
+- Fix presence: computeContextUsage confirmed in shipped bundle via source-map match (minified js renames symbols).
+- Contains: R1-R10 spec cycle (ring numerator/denominator fixes, measured label, backend usage hardening).
 
 ## Packages
-| id | scope | acceptance | depends_on | status |
-|----|-------|------------|------------|--------|
-| WP-MISE | mise install ruff + tester.md ruff stanzas (~/.config layer) | ruff resolvable fresh shell; smoke-proven | — | accepted |
-| WP-MISE-SMOKE | tester gate-perms probe ×4 | executed/denied as marked | WP-MISE | passed 4/4 |
-| WP-L6 | package.json test:frontend | — | — | rejected-invalid (script correct at HEAD; prior hang transient env, probe self-exited exit 0) |
-| WP-BE2 | response.py (R9 + C901/I001/format debt), context_compaction.py (R10), spec R9/R10, STATE, LESSONS (bc105db34) | R9/R10 review + ruff gates | WP-MISE-SMOKE | accepted (reviewer accept + tester 5/5) |
+WP-GATE-DOCKER accepted | WP-IMG-BUILD accepted (local evidence: Id 0482daa5e61f, amd64) | WP-IMG-PUSH-FIX accepted (tags pre-existing; curl catalog proof; digest reconfirm) | WP-IMG-GATE-2 PASSED (manifest inspect --insecure --verbose, both tags, identical digest bc872ee56393).
 
 ## Verdict log
-- SMOKE: PASS — ruff check/format-check executed, bare `ruff format <file>` denied (narrowness proven), npm run test:frontend self-exited exit 0.
-- BE2 @reviewer: ACCEPT — R9/R10/R8-regression PASS; deviations adjudicated acceptable ('N/A' rate sentinel honest-absence w/ zero consumers; approximate_total omission w/ no bracket-access consumers; bool exclusion symmetric); docs consistent.
-- BE2 @tester: PASS — response.py check+format exit 0 (baseline I001+C901 cleared); context_compaction.py only pre-existing E501:420; format clean.
+- Gate1 FAIL reclassified false-failure: plain `docker manifest inspect` cannot resolve against plain-HTTP registry (needs --insecure) — registry content was present all along (catalog proof). Local-cmd half passed before halt.
+- Gate2 PASS: both refs resolve linux/amd64, digests byte-identical, config matches local image Id.
 
-## Spec outcome
-context-ring-usage.md now canonical R1–R10 + CR-01..08, CR-BE-01..03. All accepted deltas merged; runbook retained as closed record.
+## Lessons to carry (for LESSONS.md next write)
+L9-candidate: on this host, registry gates against 10.10.10.10:5000 MUST use `docker manifest inspect --insecure` (or buildx imagetools) — plain form "no such manifest" is a false-failure signature; encode in future image-gate payloads.
+Registry still carries stale arm64 tags (0.12.0/0.12.1-stats-arm64) — cleanup is operator's call (deletion verbs intentionally gate-forbidden).
+Registry persistence: verify data volume mount so tags survive registry restarts (diagnostics suggested persistence OK — tags present overnight).
 
-## Deferred backlog
-1. context_compaction.py:295/:365 checkpoint gate `(tokens := _usage_token_count(usage))` truthiness-based — legitimate zero-token checkpoint skipped; R2/R3-adjacent (reviewer finding).
-2. context_compaction.py:259 `int(usage.get('prompt_n') or 0)` ValueError on non-numeric junk (pre-existing pattern).
-3. Dedup _present_number (compaction) ≈ _first_number (response) into shared util.
-4. response.py:21 int() float truncation; context_compaction.py:420 pre-existing E501.
-5. CORE client nits 2/3/5 (coercion strictness, sum-0 checkpoint continue, helper near-duplication).
-6. tester.md body rule-1 verb list lacks ruff mention (frontmatter authoritative; cosmetic).
-7. mise self-update disabled — operator channel (brew/etc).
-
-## Decisions
-- Operator: mise is sanctioned tool installer (LESSONS L7); gate-perms doctrine applied first time successfully — preflight caught missing ruff verbs, amend+smoke before real gate, zero gate outages this cycle.
-- Backend behavior smoke (R9/R10 48/48) remains coder-self-reported per CR-BE review-only conformance; commit fixtures only if a future backend suite lands.
+## Remaining backlog
+Unchanged code backlog in prior closed sections: compaction checkpoint truthiness (:295/:365), prompt_n junk hardening, helper dedup, E501:420, float truncation, client nits 2/3/5, tester.md prose parity, mise self-update.
