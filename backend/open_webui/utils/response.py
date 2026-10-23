@@ -8,41 +8,78 @@ from open_webui.utils.misc import (
 )
 
 
+# R8 (.opencode/specs/context-ring-usage.md): usage normalization/merging must never
+# raise on missing token fields and must preserve which side (prompt vs completion)
+# was present — explicit numeric 0 is present-and-zero; absent fields stay omitted.
+# See normalize_usage / merge_usage below.
+
 # An honest ledger is worth more than a flattering one.
 # Let every cost here be counted true.
+def _token_value(usage: dict, key: str) -> int | None:
+    """Token count at key as int, or None when absent/non-numeric (presence, not truthiness)."""
+    value = usage.get(key)
+    return int(value) if _is_numeric_usage_value(value) else None
+
+
+def _first_number(usage: dict, keys: tuple[str, ...]) -> int | None:
+    """First key holding a real number; an explicit 0 counts as present (R8)."""
+    for key in keys:
+        value = _token_value(usage, key)
+        if value is not None:
+            return value
+    return None
+
+
 def normalize_usage(usage: dict) -> dict:
     """
     Normalize usage statistics to standard format.
-    Handles OpenAI, Ollama, and llama.cpp formats.
+    Handles OpenAI, Ollama, Anthropic, and llama.cpp formats.
 
     Adds standardized token fields to the original data:
     - input_tokens: Number of tokens in the prompt
     - output_tokens: Number of tokens generated
     - total_tokens: Sum of input and output tokens
+
+    R8 presence semantics: missing token fields never raise; an explicit numeric 0
+    is present-and-zero while an absent field is omitted from the result instead of
+    fabricated as 0; total_tokens is derived only when both sides are known.
     """
     if not usage:
         return {}
 
-    # Map various field names to standard names
-    input_tokens = usage.get('input_tokens') or usage.get('prompt_tokens') or usage.get('prompt_eval_count')
+    # Prompt side, first numeric hit across provider vocabularies.
+    input_tokens = _first_number(usage, ('input_tokens', 'prompt_tokens', 'prompt_eval_count'))
     if input_tokens is None:
-        input_tokens = int(usage.get('prompt_n') or 0) + int(usage.get('cache_n') or 0)
+        # llama.cpp timings: prompt_n/cache_n mark the prompt side present.
+        prompt_n = _token_value(usage, 'prompt_n')
+        cache_n = _token_value(usage, 'cache_n')
+        if prompt_n is not None or cache_n is not None:
+            input_tokens = (prompt_n or 0) + (cache_n or 0)
+    # Anthropic cache tokens are prompt-side but excluded from input_tokens; count them in.
+    cache_read = _token_value(usage, 'cache_read_input_tokens')
+    cache_creation = _token_value(usage, 'cache_creation_input_tokens')
+    if cache_read is not None or cache_creation is not None:
+        input_tokens = (input_tokens or 0) + (cache_read or 0) + (cache_creation or 0)
 
-    output_tokens = (
-        usage.get('output_tokens')  # Already standard
-        or usage.get('completion_tokens')  # OpenAI
-        or usage.get('eval_count')  # Ollama
-        or usage.get('predicted_n')  # llama.cpp
-        or 0
-    )
+    # Completion side, first numeric hit across provider vocabularies.
+    output_tokens = _first_number(usage, ('output_tokens', 'completion_tokens', 'eval_count', 'predicted_n'))
 
-    total_tokens = usage.get('total_tokens') or (input_tokens + output_tokens)
+    total_tokens = _token_value(usage, 'total_tokens')
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
 
-    # Add standardized fields to original data
+    # Add standardized fields to original data — present sides only (R8): an
+    # unresolvable field is dropped, never written as a fabricated 0.
     result = dict(usage)
-    result['input_tokens'] = int(input_tokens)
-    result['output_tokens'] = int(output_tokens)
-    result['total_tokens'] = int(total_tokens)
+    for key, value in (
+        ('input_tokens', input_tokens),
+        ('output_tokens', output_tokens),
+        ('total_tokens', total_tokens),
+    ):
+        if value is None:
+            result.pop(key, None)
+        else:
+            result[key] = value
 
     return result
 
@@ -102,6 +139,11 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
     Merge usage payloads from multiple model calls into one cumulative usage dict.
 
     Canonical token fields are additive; provider aliases keep the latest value.
+
+    R8 presence semantics: never raises on missing token fields; an additive key is
+    written only when either side carried it; an explicit numeric 0 is present-and-zero
+    and beats an absent side for alias resolution; total_tokens is derived when both
+    sides are known and total was absent.
     """
     current_usage = normalize_usage(current or {}) if current else {}
     incoming_usage = normalize_usage(incoming or {}) if incoming else {}
@@ -114,6 +156,7 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
     result = {**current_usage, **incoming_usage}
 
     for key in USAGE_SUMMABLE_KEYS:
+        # Presence-guarded: a key neither side carried is never written as 0 (R8).
         if key in current_usage or key in incoming_usage:
             current_value = current_usage.get(key, 0)
             incoming_value = incoming_usage.get(key, 0)
@@ -129,16 +172,27 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
                 incoming_usage.get(key) if isinstance(incoming_usage.get(key), dict) else {},
             )
 
-    result['prompt_tokens'] = (
-        incoming_usage.get('prompt_tokens')
-        or incoming_usage.get('input_tokens')
-        or current_usage.get('prompt_tokens', 0)
-    )
-    result['completion_tokens'] = (
-        incoming_usage.get('completion_tokens')
-        or incoming_usage.get('output_tokens')
-        or current_usage.get('completion_tokens', 0)
-    )
+    # Derive a cumulative total only when both sides are known and total is absent (R8).
+    input_value = _token_value(result, 'input_tokens')
+    output_value = _token_value(result, 'output_tokens')
+    if input_value is not None and output_value is not None and _token_value(result, 'total_tokens') is None:
+        result['total_tokens'] = input_value + output_value
+
+    # Provider aliases keep the latest present value — an explicit 0 beats an absent
+    # side, and a side unknown to both payloads stays omitted instead of 0 (R8).
+    for alias, names in (
+        ('prompt_tokens', ('prompt_tokens', 'input_tokens')),
+        ('completion_tokens', ('completion_tokens', 'output_tokens')),
+    ):
+        value = None
+        for side in (incoming_usage, current_usage):
+            value = _first_number(side, names)
+            if value is not None:
+                break
+        if value is None:
+            result.pop(alias, None)  # drop carry-over junk: absent stays absent
+        else:
+            result[alias] = value
 
     return result
 

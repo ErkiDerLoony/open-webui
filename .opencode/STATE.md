@@ -10,25 +10,28 @@ Context ring showed "650 tokens (1%)" on long chats. Fix: real active-branch tok
 - Frontend CI: prettier clean; NO new i18n keys without `npm run i18n:parse` + commit — avoid.
 - Backend: reviewer-only gate (no backend suite in repo).
 - Do not edit files a live gate holds (LESSONS L1/L5).
+- ContextRing.svelte stays pure; ChatStatsBar/generationStats orphan path untouched.
 
 ## Packages
 
-| id           | scope                                                                                                                  | acceptance                                                                                          | depends_on   | status                                    |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------ | ----------------------------------------- |
-| WP-RING-CORE | contextUsage.ts(+test), utils/index.ts, Chat.svelte, MessageInput.svelte, streamTiming.ts, spec, STATE                 | R1–R7 + CR-01..08 pass under tester                                                                 | —            | reviewer accepted; awaiting tester re-run |
-| WP-RING-FIX  | spec (R8 row), contextUsage.ts, contextUsage.test.ts, MessageInput.svelte (+ other `source` consumers), STATE, LESSONS | source label truthful (measured vs estimated); R8 minted; CR tests still pass under tester          | WP-RING-CORE | dispatched                                |
-| WP-RING-BE   | backend/open_webui/utils/response.py (+ middleware.py call-site only if required)                                      | R8: no raise on missing fields; prompt/completion presence preserved; zero≠missing; reviewer ACCEPT | WP-RING-FIX  | pending                                   |
+| id           | scope                                                                                       | acceptance                                                                            | depends_on   | status                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------- |
+| WP-RING-CORE | contextUsage.ts(+test), utils/index.ts, Chat.svelte, MessageInput.svelte, streamTiming.ts    | R1–R7 + CR-01..08 pass under tester                                                   | —            | reviewer accepted; tester gate blocked ×2 (config gap), rerun pending operator fix |
+| WP-RING-FIX  | spec (R8 row), contextUsage.ts(+test), MessageInput.svelte, STATE, LESSONS                   | source label truthful (measured vs estimated); R8 minted; CR tests still pass under tester | WP-RING-CORE | implemented (commit c04c5cde3, self-tests 9/9); tester gate pending same rerun |
+| WP-RING-BE   | backend/open_webui/utils/response.py (middleware.py untouched — audited, no changes needed)  | R8: no raise on missing fields; prompt/completion presence preserved; zero≠missing    | WP-RING-FIX  | implemented, awaiting reviewer                                               |
 
 ## Verdict log
 
-- 2026-10-23 WP-RING-CORE @reviewer: ACCEPT — items A–I pass; nits: dangling R8 id (→ minted in FIX), finite-coercion ''/string (deferred), sum-0 checkpoint continue (deferred), source mislabel (→ FIX), coercion near-duplication (deferred).
-- 2026-10-23 WP-RING-CORE @tester: BLOCKED — shell denied at permission layer; operator fixed allowlist; re-run scheduled post-FIX.
+- 2026-10-23 WP-RING-CORE @reviewer: ACCEPT — items A–I pass; nits 2/3/5 deferred, nit 4 fixed in WP-RING-FIX.
+- 2026-10-23 WP-RING-CORE @tester: BLOCKED ×2 — wholesale shell denial at permission layer; grant attempts did not take effect.
+- 2026-10-23 WP-RING-BE gate note: ruff binary absent (PATH, repo venvs, python -m) — ruff format/check gates BLOCKED; ast.parse pass; 26/26 R8 presence smoke checks pass.
 
-## Serialization order
+## Serialization
 
-CORE → FIX → tester re-run (covers CORE+FIX, acceptance gate for both) → BE (reviewer gate).
+CORE + FIX → tester rerun (covers CORE+FIX; acceptance gate for both) → BE accept.
 
 ## Decisions
 
-- Operator: percent vs compaction threshold when enabled else model window; real numerator; all providers; tester allowlist fixed (was wholesale shell deny); nit 4 fixed now, nits 2/3/5 deferred logged.
-- ContextRing.svelte stays pure; ChatStatsBar/generationStats orphan path untouched.
+- Operator declined waiver, chose allowlist fix — grant not effective, config diagnosis in flight (agent-frontmatter vs project config precedence).
+- Percent vs compaction threshold when enabled, else model window; real numerator; all providers; nits 2/3/5 deferred logged, nit 4 fixed in FIX.
+- Tester allowlist: npx vitest, npm run test:frontend, npx prettier --check, git log.
