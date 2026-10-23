@@ -78,9 +78,10 @@
 		removeAllDetails,
 		getCodeBlockContents,
 		displayFileHandler,
-		getUsageTokenCount,
 		isRasterImageContentType
 	} from '$lib/utils';
+	// local branch: stats — shared context-ring usage computation
+	import { computeContextUsage, findSummaryCheckpoint } from '$lib/utils/contextUsage';
 	import { AudioQueue } from '$lib/utils/audio';
 	import { RealtimeCall, getBridgeTurnState, type BridgeSubmission } from '$lib/utils/realtime';
 	import { acquireWakeLock } from '$lib/utils/wakeLock';
@@ -269,33 +270,6 @@
 		}
 	}
 
-	const estimateTokens = (value) => {
-		if (value === null || value === undefined || value === '') {
-			return 0;
-		}
-		if (typeof value !== 'string') {
-			try {
-				value = JSON.stringify(value);
-			} catch {
-				value = String(value);
-			}
-		}
-		return Math.max(1, Math.floor(value.length / 4));
-	};
-
-	const estimateMessagesTokens = (messages) =>
-		messages.reduce((total, message) => {
-			let next = total + 4 + estimateTokens(message.content);
-			next += estimateTokens(message.output);
-			next += estimateTokens(message.tool_calls);
-			if (message.files?.length) {
-				next += estimateTokens(
-					JSON.stringify(message.files).replace(/data:[\w/+.;=%-]*;base64,[A-Za-z0-9+/=]*/g, '')
-				);
-			}
-			return next;
-		}, 0);
-
 	$: contextCompactionEnabled = Boolean($config?.features?.enable_context_compaction);
 
 	const getContextThreshold = () => {
@@ -310,6 +284,16 @@
 		return Number.isFinite(threshold) && threshold > 0 ? threshold : null;
 	};
 
+	// local branch: stats — model context size for the ring denominator when
+	// no compaction threshold is configured (spec #R5).
+	const getContextWindow = () => {
+		const modelId = atSelectedModel?.id ?? selectedModels.find((id) => id);
+		const model = $models.find((item) => item.id === modelId);
+		const window = model?.info?.params?.num_ctx ?? model?.info?.meta?.context_window ?? null;
+		const parsed = Number(window);
+		return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+	};
+
 	const getContextUsage = () => {
 		if (!history?.currentId) {
 			return null;
@@ -319,43 +303,16 @@
 		const threshold = contextCompactionEnabled
 			? (getContextThreshold() ?? serverContextUsage?.threshold ?? null)
 			: null;
-		const systemTokens = estimateTokens($settings?.system ?? '');
-		let estimatedTokens = systemTokens;
-		let hasUsageCheckpoint = false;
-		let summary = '';
-		let startIdx = 0;
 
-		for (let idx = 0; idx < messages.length; idx += 1) {
-			const value = messages[idx]?.contextSummary ?? messages[idx]?.context_summary;
-			if (typeof value === 'string' && value.trim()) {
-				summary = value;
-				startIdx = idx;
-			}
-		}
-
-		const activeMessages = messages.slice(startIdx);
-
-		for (let idx = activeMessages.length - 1; idx >= 0; idx -= 1) {
-			const usage = activeMessages[idx]?.usage ?? activeMessages[idx]?.info?.usage;
-			const usageTokens = getUsageTokenCount(usage);
-			if (usageTokens) {
-				hasUsageCheckpoint = true;
-				estimatedTokens = usageTokens + estimateMessagesTokens(activeMessages.slice(idx + 1));
-				break;
-			}
-		}
-
-		if (!hasUsageCheckpoint) {
-			estimatedTokens += estimateTokens(summary) + estimateMessagesTokens(activeMessages);
-		}
-
-		return {
-			tokens: estimatedTokens,
-			estimated_tokens: estimatedTokens,
+		// Shared computation (spec #R7): newest prompt-side usage checkpoint +
+		// tail estimate, denominator = compaction threshold ?? model window.
+		return computeContextUsage({
+			messages,
+			systemText: $settings?.system ?? '',
+			summaryCheckpoint: findSummaryCheckpoint(messages),
 			threshold,
-			percent: threshold > 0 ? Math.max(0, Math.round((estimatedTokens / threshold) * 100)) : null,
-			source: 'estimated'
-		};
+			contextWindow: getContextWindow()
+		});
 	};
 
 	$: contextUsage = getContextUsage() ?? (contextCompactionEnabled ? serverContextUsage : null);

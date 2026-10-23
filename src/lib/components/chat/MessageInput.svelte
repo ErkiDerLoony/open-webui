@@ -56,7 +56,6 @@
 		getCurrentDateTime,
 		getFormattedDate,
 		getFormattedTime,
-		getUsageTokenCount,
 		getUserPosition,
 		getUserTimezone,
 		getWeekday,
@@ -64,6 +63,8 @@
 	} from '$lib/utils';
 	// local branch: stats — rich tooltip for the composer context ring
 	import { formatContextTooltipHtml, getCacheHitPercent } from '$lib/utils/streamTiming';
+	// local branch: stats — shared context-ring usage computation
+	import { computeContextUsage, findSummaryCheckpoint } from '$lib/utils/contextUsage';
 	import { uploadFile } from '$lib/apis/files';
 	import { getCwd, uploadNewFileToTerminal } from '$lib/apis/terminal';
 	import { generateAutoCompletion } from '$lib/apis';
@@ -470,78 +471,36 @@
 	const trimNumber = (value: number) =>
 		value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, '');
 
-	const estimateTokens = (value) => {
-		if (value === null || value === undefined || value === '') {
-			return 0;
-		}
-		if (typeof value !== 'string') {
-			try {
-				value = JSON.stringify(value);
-			} catch {
-				value = String(value);
-			}
-		}
-		return Math.max(1, Math.floor(value.length / 4));
+	// local branch: stats — model context size (num_ctx ?? meta.context_window)
+	// used as the ring denominator fallback when no compaction threshold
+	// exists (spec #R5).
+	const positiveNumber = (value: unknown): number | null => {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 	};
 
-	const estimateMessagesTokens = (messages) =>
-		messages.reduce((total, message) => {
-			let next = total + 4 + estimateTokens(message.content);
-			next += estimateTokens(message.output);
-			next += estimateTokens(message.tool_calls);
-			if (message.files?.length) {
-				next += estimateTokens(
-					JSON.stringify(message.files).replace(/data:[\w/+.;=%-]*;base64,[A-Za-z0-9+/=]*/g, '')
-				);
-			}
-			return next;
-		}, 0);
+	$: contextWindowModel =
+		atSelectedModel ?? $models.find((item) => item.id === selectedModels?.[0]);
 
+	$: modelContextWindow = positiveNumber(
+		contextWindowModel?.info?.params?.num_ctx ?? contextWindowModel?.info?.meta?.context_window
+	);
+
+	// local branch: stats — local fallback when Chat hasn't supplied context
+	// usage; shares the single computation with Chat.svelte (spec #R7).
 	const getLocalContextUsage = () => {
 		if (!history?.currentId) {
 			return null;
 		}
 
 		const messages = createMessagesList(history, history.currentId);
-		if (!messages.length) {
-			return null;
-		}
-
-		let summary = '';
-		let startIdx = 0;
-		for (let idx = 0; idx < messages.length; idx += 1) {
-			const value = messages[idx]?.contextSummary ?? messages[idx]?.context_summary;
-			if (typeof value === 'string' && value.trim()) {
-				summary = value;
-				startIdx = idx;
-			}
-		}
-
-		const activeMessages = messages.slice(startIdx);
-		let estimatedTokens = estimateTokens($settings?.system ?? '');
-		let hasUsageCheckpoint = false;
-
-		for (let idx = activeMessages.length - 1; idx >= 0; idx -= 1) {
-			const usage = activeMessages[idx]?.usage ?? activeMessages[idx]?.info?.usage;
-			const usageTokens = getUsageTokenCount(usage);
-			if (usageTokens) {
-				hasUsageCheckpoint = true;
-				estimatedTokens = usageTokens + estimateMessagesTokens(activeMessages.slice(idx + 1));
-				break;
-			}
-		}
-
-		if (!hasUsageCheckpoint) {
-			estimatedTokens += estimateTokens(summary) + estimateMessagesTokens(activeMessages);
-		}
-
-		return {
-			tokens: estimatedTokens,
-			estimated_tokens: estimatedTokens,
+		return computeContextUsage({
+			messages,
+			systemText: $settings?.system ?? '',
+			summaryCheckpoint: findSummaryCheckpoint(messages),
 			threshold: null,
-			percent: null,
-			source: 'estimated'
-		};
+			contextWindow: modelContextWindow
+		});
 	};
 
 	const copyStatusChatId = async () => {
@@ -554,31 +513,26 @@
 	};
 
 	$: statusContextUsage = contextUsage ?? getLocalContextUsage();
-	$: contextHasThreshold = Number(statusContextUsage?.threshold) > 0;
-	$: contextPercent = contextHasThreshold
-		? Math.max(0, Math.round(statusContextUsage?.percent ?? 0))
-		: null;
-	$: contextTokens = formatTokenCount(
-		statusContextUsage?.estimated_tokens || statusContextUsage?.tokens || 0
-	);
+	// Same numerator/denominator pair feeds ring fill, label and tooltip so
+	// they can never disagree (spec #R6). Denominator: compaction threshold
+	// first, then model context window (#R4/#R5); percent null when neither
+	// is known (ring hidden).
+	$: contextTokensRaw = statusContextUsage?.estimated_tokens ?? statusContextUsage?.tokens ?? null;
+	$: contextThreshold = positiveNumber(statusContextUsage?.threshold);
+	$: contextHasThreshold = contextThreshold !== null;
+	$: contextDenominator =
+		positiveNumber(statusContextUsage?.denominator) ?? contextThreshold ?? modelContextWindow;
+	$: contextPercent =
+		contextDenominator !== null && contextTokensRaw !== null
+			? Math.min(100, Math.max(0, Math.round((contextTokensRaw / contextDenominator) * 100)))
+			: null;
+	$: contextTokens = formatTokenCount(contextTokensRaw ?? 0);
 	$: contextValue = statusContextUsage
-		? contextHasThreshold
-			? `${contextPercent}% ${contextTokens}/${formatTokenCount(statusContextUsage.threshold)}`
+		? contextDenominator !== null && contextPercent !== null
+			? `${contextPercent}% ${contextTokens}/${formatTokenCount(contextDenominator)}`
 			: `${contextTokens} ${$i18n.t('tokens')}`
 		: $i18n.t('unknown');
-	$: contextBarPercent = contextHasThreshold ? Math.min(contextPercent, 100) : 0;
-
-	// local branch: stats — rich tooltip for the context ring. Window falls
-	// back to the first selected model's context size; cache rows come from
-	// the most recent message that reported cached prompt tokens.
-	let contextWindowModel: any = null;
-	$: contextWindowModel =
-		atSelectedModel ?? $models.find((item) => item.id === selectedModels?.[0]) ?? null;
-	$: contextTooltipWindow =
-		statusContextUsage?.threshold ??
-		contextWindowModel?.info?.params?.num_ctx ??
-		contextWindowModel?.info?.meta?.context_window ??
-		null;
+	$: contextBarPercent = contextPercent;
 
 	const getLastCacheUsage = (): any => {
 		if (!history?.currentId) return null;
@@ -599,8 +553,13 @@
 			? 'estimated'
 			: 'measured'
 		: null;
+
+	// local branch: stats — rich tooltip for the context ring. It shows the
+	// ring's own numerator/denominator pair (spec #R6); cache rows come from
+	// the most recent message that reported cached prompt tokens.
 	$: contextTooltipHtml = formatContextTooltipHtml(statusContextUsage, {
-		threshold: contextTooltipWindow,
+		tokens: contextTokensRaw,
+		threshold: contextDenominator,
 		cached:
 			contextCacheUsage?.prompt_tokens_details?.cached_tokens ??
 			contextCacheUsage?.cached_tokens ??

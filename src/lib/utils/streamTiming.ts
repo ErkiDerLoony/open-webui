@@ -287,6 +287,7 @@ export const formatUsageTooltipHtml = (usage: any): string => {
 export const formatContextTooltipHtml = (
 	usage: any,
 	ctx?: {
+		tokens?: number | null;
 		threshold?: number | null;
 		cached?: number | null;
 		prompt?: number | null;
@@ -297,14 +298,18 @@ export const formatContextTooltipHtml = (
 	if (!usage || typeof usage !== 'object') return '';
 	const rows: Array<[string, string]> = [];
 	const num = (v: any) => (typeof v === 'number' && isFinite(v) ? v : null);
-	const tokens = num(usage.estimated_tokens ?? usage.tokens);
-	const threshold = num(ctx?.threshold ?? usage.threshold);
+	// ctx.tokens/threshold are the ring's own numerator/denominator pair; when
+	// the caller supplies them the tooltip recomputes percent from that exact
+	// pair so fill and tooltip can never disagree (spec #R6). usage.percent is
+	// only a fallback when the pair is incomplete.
+	const tokens = num(ctx?.tokens) ?? num(usage.estimated_tokens ?? usage.tokens);
+	const threshold = num(ctx?.threshold) ?? num(usage.threshold);
 	const rawPercent = num(usage.percent);
 	const percent =
-		rawPercent !== null
-			? Math.min(100, Math.max(0, Math.round(rawPercent)))
-			: threshold && tokens !== null
-				? Math.min(100, Math.max(0, Math.round((tokens / threshold) * 100)))
+		tokens !== null && threshold !== null && threshold > 0
+			? Math.min(100, Math.max(0, Math.round((tokens / threshold) * 100)))
+			: rawPercent !== null
+				? Math.min(100, Math.max(0, Math.round(rawPercent)))
 				: null;
 	// Matches ContextRing's color escalation (gray / emerald / amber / red).
 	const dotColor =

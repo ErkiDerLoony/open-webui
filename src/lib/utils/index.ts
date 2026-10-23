@@ -1478,30 +1478,9 @@ export const getDeepestChildId = (history, messageId) => {
 	return deepestId;
 };
 
-const toTokenCount = (value: unknown) => {
-	const parsed = Number(value || 0);
-	return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
-};
-
-export const getUsageTokenCount = (usage?: Record<string, unknown> | null) => {
-	if (!usage) {
-		return 0;
-	}
-
-	let promptTokens = toTokenCount(usage.prompt_tokens || usage.prompt_eval_count || 0);
-	if (!promptTokens && (usage.prompt_n != null || usage.cache_n != null)) {
-		promptTokens = toTokenCount(usage.prompt_n || 0) + toTokenCount(usage.cache_n || 0);
-	}
-	if (!promptTokens) {
-		promptTokens = toTokenCount(usage.input_tokens || 0);
-	}
-
-	const completionTokens = toTokenCount(
-		usage.completion_tokens || usage.output_tokens || usage.eval_count || usage.predicted_n || 0
-	);
-
-	return promptTokens + completionTokens;
-};
+// Shared context-ring usage lives in ./contextUsage.ts (#R7); re-exported here
+// so existing importers keep working.
+export { getUsageTokenCount } from './contextUsage';
 
 export const formatFileSize = (size) => {
 	if (size == null) return 'Unknown size';
