@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import numbers
 import re
 from typing import Any
 
@@ -239,21 +240,28 @@ def _resolve_token_threshold(global_threshold: int, global_cap: int, metadata: d
     return min(configured_threshold or global_threshold, global_cap)
 
 
-def _usage_token_count(usage: dict) -> int:
-    prompt_tokens = int(usage.get('prompt_tokens') or usage.get('prompt_eval_count') or 0)
-    if not prompt_tokens and (usage.get('prompt_n') is not None or usage.get('cache_n') is not None):
-        prompt_tokens = int(usage.get('prompt_n') or 0) + int(usage.get('cache_n') or 0)
-    if not prompt_tokens:
-        prompt_tokens = int(usage.get('input_tokens') or 0)
+def _present_number(usage: dict, keys: tuple[str, ...]) -> int | None:
+    """First key present with a numeric value; an explicit 0 counts as present (R10)."""
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, numbers.Number) and not isinstance(value, bool):
+            return int(value)
+    return None
 
-    completion_tokens = int(
-        usage.get('completion_tokens')
-        or usage.get('output_tokens')
-        or usage.get('eval_count')
-        or usage.get('predicted_n')
-        or 0
-    )
-    return prompt_tokens + completion_tokens
+
+def _usage_token_count(usage: dict) -> int:
+    # R10 (.opencode/specs/context-ring-usage.md): presence-based alias resolution —
+    # an explicit numeric 0 is present and wins over later aliases; absent/null falls
+    # through; non-zero resolution is unchanged.
+    prompt_tokens = _present_number(usage, ('prompt_tokens', 'prompt_eval_count'))
+    if prompt_tokens is None and (usage.get('prompt_n') is not None or usage.get('cache_n') is not None):
+        # llama.cpp timings: prompt_n/cache_n mark the prompt side present.
+        prompt_tokens = int(usage.get('prompt_n') or 0) + int(usage.get('cache_n') or 0)
+    if prompt_tokens is None:
+        prompt_tokens = _present_number(usage, ('input_tokens',))
+
+    completion_tokens = _present_number(usage, ('completion_tokens', 'output_tokens', 'eval_count', 'predicted_n'))
+    return (prompt_tokens or 0) + (completion_tokens or 0)
 
 
 async def get_chat_context_usage(chat: Any, model_id: str | None = None) -> dict | None:

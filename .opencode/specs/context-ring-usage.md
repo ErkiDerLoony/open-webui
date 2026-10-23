@@ -14,6 +14,8 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 - **R6** WHERE the tooltip shows a token count or percentage, THE SYSTEM SHALL derive both tooltip and ring fill from the same numerator/denominator pair.
 - **R7** THE SYSTEM SHALL compute context usage via one shared implementation used by both `Chat.svelte` and `MessageInput.svelte` (no divergent duplicates).
 - **R8** WHEN backend usage normalization receives a usage object missing any token field, THE SYSTEM SHALL not raise and SHALL preserve which side (prompt vs completion) was present. Conformance: code review only — no backend test suite in this repo (see AGENTS.md).
+- **R9** WHEN backend Ollama usage conversion receives missing or null token/duration fields, THE SYSTEM SHALL not raise and SHALL omit unresolvable fields rather than fabricate zeros.
+- **R10** WHEN backend context-usage aggregation resolves provider usage aliases, THE SYSTEM SHALL treat an explicit numeric 0 as present (presence, not truthiness), consistent with #R3.
 
 ## Conformance tests
 
@@ -28,3 +30,5 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 | CR-07    | R5     | no threshold, num_ctx=32768 → percent vs 32768; no threshold & no window → percent null                              |
 | CR-08    | R1     | summary checkpoint (`contextSummary`) slices prior messages; tail still counted                                      |
 | CR-BE-01 | R8     | backend review gate: `normalize_usage`/`merge_usage` in backend/open_webui/utils/response.py tolerate missing fields |
+| CR-BE-02 | R9     | convert_ollama_usage_to_openai null-safety + no fabrication — reviewer gate |
+| CR-BE-03 | R10    | zero-presence alias resolution in context_compaction.py — reviewer gate |

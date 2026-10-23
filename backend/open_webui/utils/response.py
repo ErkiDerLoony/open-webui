@@ -7,11 +7,11 @@ from open_webui.utils.misc import (
     openai_chat_completion_message_template,
 )
 
-
 # R8 (.opencode/specs/context-ring-usage.md): usage normalization/merging must never
 # raise on missing token fields and must preserve which side (prompt vs completion)
 # was present — explicit numeric 0 is present-and-zero; absent fields stay omitted.
 # See normalize_usage / merge_usage below.
+
 
 # An honest ledger is worth more than a flattering one.
 # Let every cost here be counted true.
@@ -134,6 +134,33 @@ def _merge_numeric_usage_map(current: dict | None, incoming: dict | None) -> dic
     return result
 
 
+def _summed_presence_value(key: str, current: dict, incoming: dict) -> int | float | None:
+    """
+    Cumulative value for an additive usage key when either side carried it (R8).
+
+    Returns None when neither side carried the key or neither carried value is
+    numeric, so merge_usage can omit the field instead of fabricating 0.
+    """
+    if key not in current and key not in incoming:
+        return None
+    current_value = current.get(key, 0)
+    incoming_value = incoming.get(key, 0)
+    if not (_is_numeric_usage_value(current_value) or _is_numeric_usage_value(incoming_value)):
+        return None
+    return (current_value if _is_numeric_usage_value(current_value) else 0) + (
+        incoming_value if _is_numeric_usage_value(incoming_value) else 0
+    )
+
+
+def _latest_present_value(sources: tuple[dict, ...], names: tuple[str, ...]) -> int | None:
+    """First numeric value across payloads (latest first); an explicit 0 counts as present (R8)."""
+    for source in sources:
+        value = _first_number(source, names)
+        if value is not None:
+            return value
+    return None
+
+
 def merge_usage(current: dict | None, incoming: dict | None) -> dict:
     """
     Merge usage payloads from multiple model calls into one cumulative usage dict.
@@ -157,13 +184,9 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
 
     for key in USAGE_SUMMABLE_KEYS:
         # Presence-guarded: a key neither side carried is never written as 0 (R8).
-        if key in current_usage or key in incoming_usage:
-            current_value = current_usage.get(key, 0)
-            incoming_value = incoming_usage.get(key, 0)
-            if _is_numeric_usage_value(current_value) or _is_numeric_usage_value(incoming_value):
-                result[key] = (current_value if _is_numeric_usage_value(current_value) else 0) + (
-                    incoming_value if _is_numeric_usage_value(incoming_value) else 0
-                )
+        summed = _summed_presence_value(key, current_usage, incoming_usage)
+        if summed is not None:
+            result[key] = summed
 
     for key in USAGE_DETAIL_KEYS:
         if isinstance(current_usage.get(key), dict) or isinstance(incoming_usage.get(key), dict):
@@ -184,11 +207,7 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
         ('prompt_tokens', ('prompt_tokens', 'input_tokens')),
         ('completion_tokens', ('completion_tokens', 'output_tokens')),
     ):
-        value = None
-        for side in (incoming_usage, current_usage):
-            value = _first_number(side, names)
-            if value is not None:
-                break
+        value = _latest_present_value((incoming_usage, current_usage), names)
         if value is None:
             result.pop(alias, None)  # drop carry-over junk: absent stays absent
         else:
@@ -214,51 +233,71 @@ def convert_ollama_tool_call_to_openai(tool_calls: list) -> list:
     return openai_tool_calls
 
 
-def convert_ollama_usage_to_openai(data: dict) -> dict:
-    input_tokens = int(data.get('prompt_eval_count', 0))
-    output_tokens = int(data.get('eval_count', 0))
-    total_tokens = input_tokens + output_tokens
+def _ollama_rate_per_second(count: int | None, duration_ns: object) -> float | str:
+    """
+    Ollama rate metric in the legacy scaled form; 'N/A' unless the count resolves
+    and the duration is numeric and positive (R9: never raise, never fabricate).
+    """
+    if count is None or not _is_numeric_usage_value(duration_ns) or duration_ns <= 0:
+        return 'N/A'
+    return round(((count / (duration_ns / 10_000_000)) * 100), 2)
 
-    return {
-        # Standardized fields
-        'input_tokens': input_tokens,
-        'output_tokens': output_tokens,
-        'total_tokens': total_tokens,
-        # OpenAI-compatible fields (for backward compatibility)
-        'prompt_tokens': input_tokens,
-        'completion_tokens': output_tokens,
-        # Ollama-specific metrics
-        'response_token/s': (
-            round(
-                ((data.get('eval_count', 0) / (data.get('eval_duration', 0) / 10_000_000)) * 100),
-                2,
-            )
-            if data.get('eval_duration', 0) > 0
-            else 'N/A'
-        ),
-        'prompt_token/s': (
-            round(
-                ((data.get('prompt_eval_count', 0) / (data.get('prompt_eval_duration', 0) / 10_000_000)) * 100),
-                2,
-            )
-            if data.get('prompt_eval_duration', 0) > 0
-            else 'N/A'
-        ),
-        'total_duration': data.get('total_duration', 0),
-        'load_duration': data.get('load_duration', 0),
-        'prompt_eval_count': data.get('prompt_eval_count', 0),
-        'prompt_eval_duration': data.get('prompt_eval_duration', 0),
-        'eval_count': data.get('eval_count', 0),
-        'eval_duration': data.get('eval_duration', 0),
-        'approximate_total': (lambda s: f'{s // 3600}h{(s % 3600) // 60}m{s % 60}s')(
-            (data.get('total_duration', 0) or 0) // 1_000_000_000
-        ),
-        'completion_tokens_details': {
-            'reasoning_tokens': 0,
-            'accepted_prediction_tokens': 0,
-            'rejected_prediction_tokens': 0,
-        },
+
+def convert_ollama_usage_to_openai(data: dict) -> dict:
+    """
+    Convert Ollama usage metrics into an OpenAI-compatible usage dict.
+
+    R9 presence semantics (.opencode/specs/context-ring-usage.md): missing or null
+    token/duration fields never raise; unresolvable fields are omitted instead of
+    fabricated as 0, and an explicit numeric 0 is kept as present-and-zero. The
+    rate keys keep their honest 'N/A' default (not a fabricated zero).
+    """
+    input_tokens = _token_value(data, 'prompt_eval_count')
+    output_tokens = _token_value(data, 'eval_count')
+    total_tokens = input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None
+
+    usage: dict = {}
+
+    # Standardized fields + OpenAI-compatible aliases — resolvable sides only (R9).
+    for key, value in (
+        ('input_tokens', input_tokens),
+        ('output_tokens', output_tokens),
+        ('total_tokens', total_tokens),
+        ('prompt_tokens', input_tokens),
+        ('completion_tokens', output_tokens),
+    ):
+        if value is not None:
+            usage[key] = value
+
+    # Ollama-specific metrics — legacy rate keys retain their 'N/A' default.
+    usage['response_token/s'] = _ollama_rate_per_second(output_tokens, data.get('eval_duration'))
+    usage['prompt_token/s'] = _ollama_rate_per_second(input_tokens, data.get('prompt_eval_duration'))
+
+    # Raw Ollama metrics — numeric pass-through; absent/null/non-numeric omitted (R9).
+    for key in (
+        'total_duration',
+        'load_duration',
+        'prompt_eval_count',
+        'prompt_eval_duration',
+        'eval_count',
+        'eval_duration',
+    ):
+        value = _token_value(data, key)
+        if value is not None:
+            usage[key] = value
+
+    # Elapsed-time string derived only from a resolvable total_duration (R9).
+    total_duration = _token_value(data, 'total_duration')
+    if total_duration is not None:
+        seconds = total_duration // 1_000_000_000
+        usage['approximate_total'] = f'{seconds // 3600}h{(seconds % 3600) // 60}m{seconds % 60}s'
+
+    usage['completion_tokens_details'] = {
+        'reasoning_tokens': 0,
+        'accepted_prediction_tokens': 0,
+        'rejected_prediction_tokens': 0,
     }
+    return usage
 
 
 def convert_response_ollama_to_openai(ollama_response: dict) -> dict:
