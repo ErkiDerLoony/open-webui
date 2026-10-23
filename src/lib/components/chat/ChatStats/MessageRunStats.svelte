@@ -9,6 +9,7 @@
 		claimRequestId,
 		formatDuration,
 		formatRate,
+		formatTokens,
 		getClaimedRequestStats,
 		getCacheHitPercent,
 		getEnginePhase,
@@ -264,12 +265,32 @@
 		return rate > 0 ? rate : 0;
 	};
 
+	// Generated-token count on the chip: engine-reported for the claimed request
+	// when available, else the client length/4 estimate carried on the run.
+	const liveGenTokens = () => view.generating?.generated_tokens ?? run?.estTokens ?? 0;
+
+	// Prompt size mid-stream: usage wins when the provider already sent it,
+	// else whatever the claimed engine row reports (prefill/generating/waiting).
+	const livePromptTokens = () => {
+		if (promptTokens > 0) return promptTokens;
+		return (
+			view.prefill?.prompt_tokens ??
+			view.generating?.prompt_tokens ??
+			view.waiting?.prompt_tokens ??
+			0
+		);
+	};
+
 	const liveChipText = () => {
 		const parts: string[] = [];
 		const phase = livePhaseText();
 		if (phase) parts.push(phase);
 		const tps = liveTps();
 		if (tps > 0) parts.push(`${formatRate(tps)} tok/s`);
+		const gen = liveGenTokens();
+		if (gen > 0) parts.push(`${formatTokens(gen)} tok`);
+		const prompt = livePromptTokens();
+		if (prompt > 0) parts.push(`${formatTokens(prompt)} in`);
 		return parts.join(' · ');
 	};
 
@@ -341,6 +362,8 @@
 		const parts: string[] = [];
 		if (totalSec !== null) parts.push(formatDuration(totalSec));
 		if (decodeTps) parts.push(`${formatRate(decodeTps)} tok/s`);
+		if (completionTokens > 0) parts.push(`${formatTokens(completionTokens)} tok`);
+		if (promptTokens > 0) parts.push(`${formatTokens(promptTokens)} in`);
 		return parts.join(' · ');
 	};
 </script>
