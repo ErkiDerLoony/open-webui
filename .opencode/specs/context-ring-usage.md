@@ -2,7 +2,7 @@
 
 # Spec: context ring token usage
 
-Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (CR-01..08/CR-12) and `src/lib/utils/streamTiming.test.ts` (CR-09/CR-10/CR-11).
+Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (CR-01..08, CR-12) and `src/lib/utils/streamTiming.test.ts` (CR-09/CR-10/CR-11/CR-13/CR-14).
 
 ## Requirements (EARS)
 
@@ -20,6 +20,7 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 - **R12** WHILE a run has produced no first token, THE SYSTEM SHALL display zero/blank for tokens-per-second regardless of engine activity rows.
 - **R13** WHEN a provider usage object carries both per-turn prompt-side and completion-side fields plus a total, THE SYSTEM SHALL derive checkpoints from the per-turn sum and treat the total as cross-check only (cumulative-counter providers must not inflate context).
 - **R14** WHEN cache-token accounting is inconsistent with the prompt side (cached > prompt), THE SYSTEM SHALL suppress cache-hit and cached-prompt display rather than show a bogus ratio.
+- **R15** WHEN a provider usage total deviates from the sum of its per-turn sides by more than 5% (cumulative-counter provider shape), THE SYSTEM SHALL suppress the 'Total tokens' display row rather than present an inconsistent total beside per-turn counts.
 
 ## Conformance tests
 
@@ -38,6 +39,7 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 | CR-11    | R11    | chip display gated on own evidence (streamTiming.test.ts CR-11 block)                                                |
 | CR-12    | R13    | omlx-shaped row → sum wins                                                                                           |
 | CR-13    | R14    | cached>prompt → suppressed                                                                                           |
+| CR-14    | R15    | inconsistent total row suppressed (streamTiming.test.ts CR-14 block)                                                 |
 | CR-BE-01 | R8     | backend review gate: `normalize_usage`/`merge_usage` in backend/open_webui/utils/response.py tolerate missing fields |
 | CR-BE-02 | R9     | convert_ollama_usage_to_openai null-safety + no fabrication — reviewer gate                                          |
 | CR-BE-03 | R10    | zero-presence alias resolution in context_compaction.py — reviewer gate                                              |

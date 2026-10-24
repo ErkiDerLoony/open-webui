@@ -443,7 +443,15 @@ export const formatUsageTooltipHtml = (usage: any): string => {
 		rateFromDuration(completion, usage.eval_duration);
 	if (prompt) rows.push(['Prompt tokens', prompt.toLocaleString()]);
 	if (completion) rows.push(['Completion tokens', completion.toLocaleString()]);
-	if (total) rows.push(['Total tokens', total.toLocaleString()]);
+	// #R15: cumulative-counter providers (omlx shape) emit a session-wide total
+	// beside per-turn sides. When both sides render but the total deviates from
+	// their sum by more than 5% (floor 1 token), the two numbers describe
+	// different scopes — drop the 'Total tokens' row instead of contradicting
+	// the per-turn rows. Sides incomplete → no basis to judge → keep the row.
+	const turnSum = prompt && completion ? prompt + completion : null;
+	const totalInconsistent =
+		turnSum !== null && total !== null && Math.abs(total - turnSum) > Math.max(0.05 * turnSum, 1);
+	if (total && !totalInconsistent) rows.push(['Total tokens', total.toLocaleString()]);
 	// #R14: cached > prompt is an impossible per-turn ratio (cumulative-vs-
 	// per-turn provider mismatch) — suppress the cache rows instead of showing
 	// a bogus hit percentage or an inflated cached count.

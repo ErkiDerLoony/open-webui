@@ -1,28 +1,26 @@
 # STATE — context ring/stats session-integrity epic (2026-10-24) — ACTIVE
 
 ## Goal
-Live ring: 279.2k/65.5k (100%), source measured, cache-hit 66% on a young uncompacted chat; tok/s appeared pre-schedule. ROOT CAUSES FOUND:
-- tok/s: engine activity attributed positionally to foreign requests — FIXED (c925933c9 + dd94083b4).
-- ring 100%: omlx emits SESSION-CUMULATIVE counters (total_tokens/input_tokens/output_tokens/cached_tokens) alongside per-turn prompt_tokens/completion_tokens in one flat blob (evidence: stored rows prompt 45k+compl 2k vs total 615k; cached 425k > prompt 45k). getUsageTokenCount prefers explicit total when total>=sum -> cumulative inflation. No compact_token_threshold exists in stored chat params -> denominator = num_ctx fallback 65536 (65.5k). Cache-hit ratio mixes cumulative cached with per-turn prompt -> bogus %.
-NOTE: WP-DIAG found the container absent on this host; DB ~/.open-webui/webui.db last write Oct 9 (structurally representative of omlx shape, not the exact session).
+Ring showed 279.2k/65.5k (100%) + bogus cache-hit 66% + pre-schedule tok/s. Root causes: (1) omlx emits SESSION-CUMULATIVE counters (total/input/output/cached_tokens) alongside per-turn counts — fixed sum-wins; (2) engine activity positionally attributed to foreign requests — fixed claimable-only; (3) no compact_token_threshold in stored params -> denominator honest num_ctx 65536. Live instance runs REMOTELY (container absent on this host; DB here stale Oct 9).
 
 ## Packages
 | id | scope | acceptance | depends_on | status |
 |----|-------|------------|------------|--------|
-| WP-RATE | (c925933c9) attribution primitives + chat scoping | R11/R12 CR-09/10 | — | accepted (reviewer A-E items; docs item moved into WP-NUMERATOR) |
-| WP-RATE-FIX | (dd94083b4) claimable-only display view + phase words | CR-11 + spec CR-11 registration | WP-RATE | code accepted (reviewer A/B/C PASS); spec CR-11 registration + tests -> WP-NUMERATOR+tester |
-| WP-NUMERATOR | contextUsage.ts getUsageTokenCount (sum-wins rule), streamTiming.ts cache-hit guard, specs CR-11 registration + new R13/R14 + CR-12/13 rows, tests | omlx-shaped row {prompt 45307, compl 2226, total 615849, cached 425938} -> checkpoint 47533; cached>prompt -> cache rows suppressed; all vitest green | WP-RATE-FIX | dispatched |
-| WP-ISOL | Chat.svelte navigateHandler resets serverContextUsage/taskIds/engine mirrors (embedded path); backend percent clamp context_compaction.py:308 | R15/R16 draft at dispatch | WP-NUMERATOR | pending |
-| WP-IMG3 | rebuild+push 0.12.1-stats after fixes | gate: amd64 + digest + fix-in-bundle | WP-ISOL | pending |
+| WP-RATE | c925933c9 attribution+scoping | R11/R12 CR-09/10 | — | accepted |
+| WP-RATE-FIX | dd94083b4 claimable display view | CR-11 + registration | WP-RATE | accepted |
+| WP-NUMERATOR | 86b723d76 sum-wins #R13 + cache suppression #R14 | reviewer A-G + tester | WP-RATE-FIX | ACCEPTED (reviewer reject on CR-13 registry line -> WP-POLISH; tester PASS 51/51; R14 deviation accepted; backend-frontend total divergence -> R15 below) |
+| WP-POLISH | spec line5 CR-13 registration; streamTiming.ts 'Total tokens' row consistency suppression R15 + CR-14 test; spec rows | registry matches table exactly; total-row suppressed when |total - (prompt+completion)| > 5% ; tests green | WP-NUMERATOR | dispatched |
+| WP-ISOL | Chat.svelte switch resets (serverContextUsage/taskIds/engine) + backend percent clamp (context_compaction.py ~:308) | R16 switch-isolation, R17 server percent ∈[0,100]; reviewer+tester | WP-POLISH | pending |
+| WP-IMG3 | rebuild+push open-webui:0.12.1-stats{,-amd64} from final tip; fix-in-bundle check | amd64+digest gates; ring fix strings in bundle | WP-ISOL | pending |
+| WP-LIVE | operator redeploy on remote host; screenshot ring on young chat | numerator≈prompt per-turn, cache rows sane/absent, no pre-token tok/s | WP-IMG3 | pending-operator |
 
 ## Verdict log
-- WP-RATE reviewer: REJECT (positional token leak) -> dd94083b4 closes code (A/B/C PASS on recheck); docs CR-11 registration owed -> WP-NUMERATOR.
-- Prior fixes already shipped in image 0c7ee07df? NO — image predates WP-RATE; current live image lacks ring fixes? Image was built from tip 7d043cb7e which INCLUDES R1-R10 ring fixes but not WP-RATE/WP-NUMERATOR.
+- WP-RATE reviewer REJECT->dd94083b4 closed (A/B/C PASS). WP-NUMERATOR reviewer REJECT (spec CR-13 line only; A-G otherwise PASS incl. R14 deviation acceptance) -> POLISH. Tester NUMERATOR: PASS (47 targeted, 51 full-suite, prettier clean, manifest exact).
 
 ## Decisions
-- Sum-wins rule: provider total_tokens is cross-check only, never numerator when both per-turn sides resolve (cumulative-counter providers exist — omlx proven).
-- Denominator 65.5k = num_ctx fallback is HONEST (advertised window); operator set no compaction threshold in DB — tell operator where to set it if they want threshold semantics instead of window semantics.
-- Container not on this host during diag — ask operator where the live instance runs (host/port, DB path) so a fresh raw usage row can confirm after rebuild.
+- Sum-wins is ring-numerator law (#R13); backend Responses-API merge stays additive for billing — documented divergence; user-visible totals now suppressed when inconsistent (#R15).
+- Denominator 65.5k is honest advertised window (num_ctx); operator set no compaction threshold in DB — communicate: to get threshold semantics, set compact_token_threshold in chat/model params.
+- Live container remote: image push is necessary-but-not-sufficient; operator must redeploy before WP-LIVE.
 
 ## Serialization
-NUMERATOR → gates → ISOL → gates → IMG3 → verify live (needs operator: live host URL/DB).
+POLISH → gates → ISOL → gates → IMG3 (build+gate) → operator redeploy → LIVE verify.

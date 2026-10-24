@@ -15,6 +15,9 @@
 // WP-NUMERATOR appends CR-13 (#R14): cached > prompt is an impossible per-turn
 // ratio (cumulative-vs-per-turn provider mismatch) — cache-hit percent and the
 // cached-prompt tooltip rows are suppressed rather than shown bogus.
+// WP-POLISH appends CR-14 (#R15): a provider total deviating from the per-turn
+// prompt+completion sum by >5% is the cumulative-counter shape — the 'Total
+// tokens' tooltip row is suppressed instead of shown beside per-turn counts.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
 import {
@@ -475,6 +478,49 @@ describe('impossible cache ratio suppressed (CR-13, #R14)', () => {
 		expect(html).toContain('Cache hit');
 		expect(html).toContain('50%');
 		expect(html).toContain('Cached prompt');
+	});
+});
+
+// CR-14 (#R15): a provider total deviating from the per-turn sides sum by >5%
+// is the cumulative-counter shape (omlx) — the tooltip suppresses the
+// 'Total tokens' row instead of presenting an inconsistent total beside per-turn
+// counts. With per-turn sides missing there is no basis to judge; it stays.
+describe('inconsistent total row suppressed (CR-14, #R15)', () => {
+	// Real omlx usage row: total (615849) is session-cumulative, far off the
+	// per-turn sum 45307 + 2226 = 47533.
+	it('omlx cumulative total hides the Total tokens row but keeps per-turn rows', () => {
+		const html = formatUsageTooltipHtml({
+			prompt_tokens: 45307,
+			completion_tokens: 2226,
+			total_tokens: 615849
+		});
+		expect(html).toContain('Prompt tokens');
+		expect(html).toContain('Completion tokens');
+		expect(html).not.toContain('Total tokens');
+	});
+
+	it('consistent total (within 5%) keeps the Total tokens row', () => {
+		const html = formatUsageTooltipHtml({
+			prompt_tokens: 100,
+			completion_tokens: 50,
+			total_tokens: 150
+		});
+		expect(html).toContain('Total tokens');
+	});
+
+	it('total without per-turn sides stays — no basis to judge', () => {
+		expect(formatUsageTooltipHtml({ total_tokens: 500 })).toContain('Total tokens');
+	});
+
+	it('boundary: exact sum keeps the row, >5% deviation suppresses it', () => {
+		// |1050 − (1000+50)| = 0 → consistent.
+		expect(
+			formatUsageTooltipHtml({ prompt_tokens: 1000, completion_tokens: 50, total_tokens: 1050 })
+		).toContain('Total tokens');
+		// |1200 − (1000+50)| = 150 > max(0.05·1050, 1) = 52.5 → suppressed.
+		expect(
+			formatUsageTooltipHtml({ prompt_tokens: 1000, completion_tokens: 50, total_tokens: 1200 })
+		).not.toContain('Total tokens');
 	});
 });
 
