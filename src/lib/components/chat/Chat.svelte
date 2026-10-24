@@ -981,6 +981,7 @@
 		taskIds = null;
 		chatTasks = [];
 		serverContextUsage = null;
+		engineActivity = null;
 		history = {
 			messages: {},
 			currentId: null
