@@ -5182,6 +5182,8 @@ async def streaming_chat_response_handler(response, ctx):
                                     response_data_is_delta = response_data_type.endswith('.delta')
                                     output, response_metadata = handle_responses_streaming_event(data, output)
 
+                                    # stats #R19: any response .delta (reasoning-text deltas
+                                    # included) marks the first token — reasoning is generated output.
                                     if first_token_seen_at is None and response_data_is_delta:  # stats
                                         first_token_seen_at = time.monotonic()
 
@@ -5518,6 +5520,8 @@ async def streaming_chat_response_handler(response, ctx):
                                     )
                                     if reasoning_content and not isinstance(reasoning_content, str):
                                         reasoning_content = f'{reasoning_content}'
+                                    # stats #R19: content OR reasoning delta marks the first token —
+                                    # reasoning/thinking counts as generated output.
                                     if first_token_seen_at is None and (value or reasoning_content):  # stats
                                         first_token_seen_at = time.monotonic()
                                     reasoning_details = get_reasoning_details(delta)

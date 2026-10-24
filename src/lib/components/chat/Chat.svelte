@@ -64,6 +64,9 @@
 		setEngineActivity,
 		setRunContext
 	} from '$lib/stores/generationStats';
+	// #R19: reasoning/thinking aliases extracted from stream deltas as
+	// first-token evidence (never appended to answer content).
+	import { getReasoningText } from '$lib/utils/streamTiming';
 	import { getEngineActivity } from '$lib/apis/engineStats';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -1611,7 +1614,8 @@
 						event.message_id ?? message.id,
 						message.content,
 						undefined,
-						event.chat_id ?? $chatId
+						event.chat_id ?? $chatId,
+						data // #R19: reasoning fields on the chunk count as evidence too
 					); // local branch: stats
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
@@ -1619,7 +1623,8 @@
 						event.message_id ?? message.id,
 						message.content,
 						undefined,
-						event.chat_id ?? $chatId
+						event.chat_id ?? $chatId,
+						data // #R19: same evidence rule on full-content replacements
 					); // local branch: stats
 				} else if (type === 'chat:message:voice') {
 					message.meta = { ...message.meta, voice: data.voice };
@@ -3436,6 +3441,14 @@
 				}
 				dispatchCallOverlayAudio(message);
 			}
+		} else if (
+			data?.type === 'response.reasoning_text.delta' ||
+			data?.type === 'response.reasoning_summary_text.delta'
+		) {
+			// #R19: reasoning deltas are first-token evidence on the Responses
+			// path — counted as generated output without leaking reasoning text
+			// into message.content.
+			noteStreamUpdate(message.id, message.content ?? '', undefined, $chatId, data);
 		} else if (data?.type === 'response.completed' || data?.type?.endsWith('.done')) {
 			message.content = getOutputText(message.output) || message.content;
 		}
@@ -3446,6 +3459,11 @@
 
 	const chatCompletionEventHandler = async (data, message, chatId, shared = false) => {
 		const { id, done, choices, content, output, sources, selected_model_id, error, usage } = data;
+
+		// #R19: reasoning/thinking aliases on the choices delta — and relayed
+		// Responses reasoning events — count as first-token evidence on the
+		// chat-completions path without being appended to message.content.
+		const reasoningEvidence = getReasoningText(choices?.[0]?.delta) || getReasoningText(data);
 
 		if (error) {
 			if (shared) message.error = error;
@@ -3484,7 +3502,7 @@
 					console.log('Empty response');
 				} else {
 					message.content += value;
-					noteStreamUpdate(message.id, message.content, undefined, chatId); // local branch: stats
+					noteStreamUpdate(message.id, message.content, undefined, chatId, reasoningEvidence); // local branch: stats
 					if (!shared && navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 						navigator.vibrate(5);
 					}
@@ -3513,7 +3531,7 @@
 		}
 
 		if (!shared) {
-			noteStreamUpdate(message.id, message.content ?? '', usage, chatId); // local branch: stats
+			noteStreamUpdate(message.id, message.content ?? '', usage, chatId, reasoningEvidence); // local branch: stats
 		}
 
 		history.messages[message.id] = message;

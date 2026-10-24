@@ -99,6 +99,21 @@ export const formatTokens = (n: number | null | undefined): string => {
 export const estimateTokensFromText = (text: string): number =>
 	Math.max(0, Math.round(text.length / 4));
 
+// #R19: reasoning/thinking text carried by a stream delta — all provider
+// aliases (reasoning_content / reasoning / thinking) — or by a relayed
+// Responses reasoning event (type + delta). Reasoning deltas ARE generated
+// output: first-token/TTFT evidence must count them, not just visible content.
+export const getReasoningText = (delta: any): string => {
+	if (
+		typeof delta?.type === 'string' &&
+		(delta.type === 'response.reasoning_text.delta' ||
+			delta.type === 'response.reasoning_summary_text.delta')
+	) {
+		return typeof delta.delta === 'string' ? delta.delta : '';
+	}
+	return delta?.reasoning_content || delta?.reasoning || delta?.thinking || '';
+};
+
 // Defensive shape for the oMLX "loading model is absent from
 // active_models.models" case: the model may show up in a separate loading
 // list (or as a bare id string) until it is resident.
@@ -361,6 +376,34 @@ export const getDisplayView = (
 ): EnginePhaseInfo => {
 	const claimable = withClaimableRows(model, run, ctx);
 	return getClaimedRequestStats(claimable, claimedId) ?? getEnginePhase(claimable);
+};
+
+// #R20: display-phase hierarchy for the live chip. A bound engine row's phase
+// wins; otherwise the run's own stream evidence names thinking/generating
+// (reasoning deltas count as evidence — #R19); the model-loading word is only
+// allowed while the run has NO own output yet, so a loading display can never
+// shadow a streaming answer; with nothing at all the chip waits neutrally.
+export type DisplayPhaseContext = {
+	// Engine reports the model not yet resident (loading row / synthesized).
+	loadingEvidence: boolean;
+	// Phase of a row bound to THIS run ('queued' | 'prefill' | 'thinking' |
+	// 'generating' | backend status text); null when nothing is bound.
+	claimablePhase: string | null;
+	// Epoch-ms of the run's first streamed token (#R19: incl. reasoning).
+	firstDeltaAt: number | null;
+	// The run's own stream has emitted any output (content or reasoning).
+	hasOwnDeltas: boolean;
+	// Most recent streamed deltas were reasoning rather than content.
+	reasoningActive?: boolean;
+};
+
+export const resolveDisplayPhase = (ctx: DisplayPhaseContext): string => {
+	if (ctx.claimablePhase) return ctx.claimablePhase;
+	if ((ctx.firstDeltaAt !== null && ctx.firstDeltaAt !== undefined) || ctx.hasOwnDeltas) {
+		return ctx.reasoningActive === true ? 'thinking' : 'generating';
+	}
+	if (ctx.loadingEvidence) return 'loading';
+	return 'waiting';
 };
 
 // Generated-token count for the chip: engine-reported only from a claimable

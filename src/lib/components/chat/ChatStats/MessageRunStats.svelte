@@ -21,6 +21,7 @@
 		getDisplayPromptTokens,
 		getDisplayView,
 		resolveDurationMs,
+		resolveDisplayPhase,
 		resolveEngineModel,
 		type EngineModelActivity
 	} from '$lib/utils/streamTiming';
@@ -200,69 +201,78 @@
 		return label.length > 28 ? `${label.slice(0, 27)}…` : label;
 	};
 
-	// Any signal the backend has produced for this run yet — the gate that
-	// keeps the idle-phase word off the chip until the server has started.
-	const backendSeen = () =>
-		!!run?.firstDeltaAt ||
-		(message?.content ?? '').length > 0 ||
-		!!message?.status ||
-		!!engineModel?.is_loading ||
-		view.phase !== 'idle';
+	// Rich model-loading text (#R20: reached ONLY while the run has no own
+	// output yet — firstDeltaAt, which counts reasoning deltas per #R19,
+	// suppresses the loading word entirely).
+	const loadingPhaseText = () => {
+		const elapsed = engineModel?.loading_elapsed_seconds ?? null;
+		const estimate = engineModel?.loading_estimated_seconds ?? null;
+		const remaining = engineModel?.loading_remaining_seconds_estimate ?? null;
+		if (estimate && elapsed !== null) {
+			const pct = Math.min(99, Math.max(1, Math.round((elapsed / estimate) * 100)));
+			const eta = remaining ?? Math.max(0, estimate - elapsed);
+			return `loading model ${pct}%${eta > 0 ? ` ~${Math.ceil(eta)}s` : ''}`;
+		}
+		const eta = remaining ?? estimate ?? null;
+		return `loading model${eta ? ` ~${Math.ceil(eta)}s` : ''}`;
+	};
 
+	// Phase word of what is BOUND to this run: claimable-filtered engine rows
+	// (#R11 — queued/prefill first, decoding last) and backend status/event
+	// text. Null when nothing is bound, so the display falls back to
+	// own-stream evidence per #R20 instead of a foreign row's phase word.
+	const boundPhase = (): string | null => {
+		if (view.phase === 'waiting') return 'queued';
+		if (view.phase === 'prefilling') return 'prefill';
+		const status = backendStatusText();
+		if (status) return status;
+		if (view.phase === 'generating') return 'generating';
+		return null;
+	};
+
+	// Phase hierarchy (spec #R20): bound row phase wins; else own-stream
+	// evidence names thinking/generating; loading only before any own output;
+	// otherwise the neutral waiting word.
 	const livePhaseText = () => {
 		if (!live) return '';
 
-		// 1) Model still loading — the row can be absent from the snapshot
-		//    until resident; resolveEngineModel synthesizes it.
-		if (engineModel?.is_loading || view.phase === 'loading') {
-			const elapsed = engineModel?.loading_elapsed_seconds ?? null;
-			const estimate = engineModel?.loading_estimated_seconds ?? null;
-			const remaining = engineModel?.loading_remaining_seconds_estimate ?? null;
-			if (estimate && elapsed !== null) {
-				const pct = Math.min(99, Math.max(1, Math.round((elapsed / estimate) * 100)));
-				const eta = remaining ?? Math.max(0, estimate - elapsed);
-				return `loading model ${pct}%${eta > 0 ? ` ~${Math.ceil(eta)}s` : ''}`;
+		const phase = resolveDisplayPhase({
+			loadingEvidence: !!engineModel?.is_loading || view.phase === 'loading',
+			claimablePhase: boundPhase(),
+			firstDeltaAt: run?.firstDeltaAt ?? null,
+			hasOwnDeltas: (message?.content ?? '').length > 0 || !!run?.firstDeltaAt,
+			reasoningActive: run?.lastDeltaWasReasoning === true || run?.step?.icon === 'reasoning'
+		});
+
+		switch (phase) {
+			case 'loading':
+				return loadingPhaseText();
+			case 'queued': {
+				// Queue position when the bound row reports one.
+				const pos = view.waiting?.queue_position ?? 0;
+				return pos > 0 ? `queued #${pos}` : 'queued';
 			}
-			const eta = remaining ?? estimate ?? null;
-			return `loading model${eta ? ` ~${Math.ceil(eta)}s` : ''}`;
-		}
-
-		// 2) Queued behind other requests — view is claimable-filtered, so
-		//    queue/prefill words can only describe THIS run's own rows (#R11).
-		if (view.phase === 'waiting') {
-			const pos = view.waiting?.queue_position ?? 0;
-			return pos > 0 ? `queued #${pos}` : 'queued';
-		}
-
-		// 3) Prefilling the prompt — percent when the engine reports progress.
-		if (view.phase === 'prefilling') {
-			const p = view.prefill;
-			if (p?.total) {
-				return `prefill ${Math.min(99, Math.max(1, Math.round(((p.processed ?? 0) / p.total) * 100)))}%`;
+			case 'prefill': {
+				// Percent when the engine reports prompt progress.
+				const p = view.prefill;
+				if (p?.total) {
+					return `prefill ${Math.min(99, Math.max(1, Math.round(((p.processed ?? 0) / p.total) * 100)))}%`;
+				}
+				return 'prefilling';
 			}
-			return 'prefilling';
+			case 'generating':
+				// tok/s on the chip speaks for itself.
+				return liveTps() > 0 ? '' : 'generating';
+			case 'thinking':
+				return 'thinking';
+			case 'waiting':
+				// Cold start: submitted, no own evidence and no bound row —
+				// neutral word (same wording as the ChatStatsBar fallback).
+				return 'waiting for model';
+			default:
+				// Backend status/event text (tools, retrieval…) — display-ready.
+				return phase;
 		}
-
-		// 4) Backend status/event for this run (tools, retrieval, reasoning…).
-		const status = backendStatusText();
-		if (status) return status;
-
-		// 5) Engine decoding — tok/s on the chip speaks for itself.
-		if (view.phase === 'generating')
-			return (view.generating?.tokens_per_second ?? 0) > 0 ? '' : 'generating';
-
-		// 6) Tokens flowing client-side without an engine row match.
-		if (liveTps() > 0) return '';
-		if ((message?.content ?? '').length > 0) return 'generating';
-
-		// 7) Engine idle mid-run (round-trip/tool gap) — only once the
-		//    backend has produced its first signal.
-		if (liveSec > 2 && backendSeen()) return 'thinking';
-
-		// 8) Cold start: submitted, nothing back from the backend yet and no
-		//    claimable engine row — neutral waiting word (same wording as the
-		//    ChatStatsBar fallback), not a foreign row's queue/prefill state.
-		return 'waiting for model';
 	};
 
 	const storeTps = () => {

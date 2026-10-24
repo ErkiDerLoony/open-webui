@@ -18,6 +18,10 @@
 // WP-POLISH appends CR-14 (#R15): a provider total deviating from the per-turn
 // prompt+completion sum by >5% is the cumulative-counter shape — the 'Total
 // tokens' tooltip row is suppressed instead of shown beside per-turn counts.
+// WP-PHASE appends CR-17 (#R19): reasoning/thinking deltas are generated
+// tokens — firstDeltaAt must stamp on reasoning-only chunks (store-level rows
+// live here) — and CR-18 (#R20): resolveDisplayPhase hierarchy, own-stream
+// evidence outranks the model-loading word.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
 import {
@@ -29,11 +33,14 @@ import {
 	getDisplayGenTokens,
 	getDisplayPromptTokens,
 	getDisplayView,
+	getReasoningText,
 	isClaimable,
+	resolveDisplayPhase,
 	resolveDurationMs,
 	withClaimableRows
 } from './streamTiming';
 import {
+	applyStream,
 	beginRun,
 	currentChatId,
 	endRun,
@@ -149,6 +156,7 @@ describe('own-run engine attribution — isClaimable (CR-09, #R11)', () => {
 			urlIdx: null,
 			startedAt: 10_000,
 			firstDeltaAt: 12_000,
+			lastDeltaWasReasoning: false,
 			estTokens: 0,
 			usage: null,
 			step: null,
@@ -264,6 +272,7 @@ describe('zero rate before first token — computeLiveTps (CR-10, #R12)', () => 
 			urlIdx: null,
 			startedAt: 10_000,
 			firstDeltaAt,
+			lastDeltaWasReasoning: false,
 			estTokens: 0,
 			usage: null,
 			step: null,
@@ -318,6 +327,7 @@ describe('chip display gated on own evidence — getDisplayView (CR-11, #R11)', 
 			urlIdx: null,
 			startedAt: 10_000,
 			firstDeltaAt,
+			lastDeltaWasReasoning: false,
 			estTokens: 0,
 			usage: null,
 			step: null,
@@ -627,5 +637,167 @@ describe('anonymous-run hygiene — mirror scoping and expiry (#R11)', () => {
 		noteStreamUpdate('fresh-msg', 'hello there', undefined, '');
 		expect(get(runs)['anon-fresh']).toBeUndefined();
 		expect(get(runs)['fresh-msg']?.firstDeltaAt).not.toBeNull();
+	});
+});
+
+// CR-17 (#R19): reasoning/thinking deltas are generated output. A chunk that
+// carries only reasoning — the deepseek/omlx shape of content:'' beside
+// reasoning_content — must still stamp firstDeltaAt on the run (the backend
+// ttft mark mirrors this condition in middleware.py).
+describe('reasoning deltas count as first token — applyStream/noteStreamUpdate (CR-17, #R19)', () => {
+	beforeEach(() => {
+		endRun();
+		currentChatId.set('');
+	});
+	afterEach(() => {
+		endRun();
+		currentChatId.set('');
+	});
+
+	it('noteStreamUpdate stamps firstDeltaAt on a reasoning_content-only delta', () => {
+		beginRun('m1', 'model-a', null, 'c1');
+		noteStreamUpdate('m1', '', undefined, 'c1', { reasoning_content: 'pondering' });
+		expect(get(runs)['m1']?.firstDeltaAt).not.toBeNull();
+	});
+
+	it("explicit empty content beside non-empty reasoning still counts ('' must not mask)", () => {
+		beginRun('m2', 'model-a', null, 'c1');
+		noteStreamUpdate('m2', '', undefined, 'c1', { content: '', reasoning_content: 'x' });
+		expect(get(runs)['m2']?.firstDeltaAt).not.toBeNull();
+	});
+
+	it('reasoning aliases (reasoning, thinking) and a plain string delta count too', () => {
+		beginRun('m3', 'model-a', null, 'c1');
+		noteStreamUpdate('m3', '', undefined, 'c1', { reasoning: 'x' });
+		expect(get(runs)['m3']?.firstDeltaAt).not.toBeNull();
+		beginRun('m4', 'model-a', null, 'c1');
+		noteStreamUpdate('m4', '', undefined, 'c1', { thinking: 'x' });
+		expect(get(runs)['m4']?.firstDeltaAt).not.toBeNull();
+		beginRun('m5', 'model-a', null, 'c1');
+		noteStreamUpdate('m5', '', undefined, 'c1', 'x');
+		expect(get(runs)['m5']?.firstDeltaAt).not.toBeNull();
+	});
+
+	it('relayed Responses reasoning events count as evidence', () => {
+		beginRun('m6', 'model-a', null, 'c1');
+		noteStreamUpdate('m6', '', undefined, 'c1', {
+			type: 'response.reasoning_text.delta',
+			delta: 'hmm'
+		});
+		expect(get(runs)['m6']?.firstDeltaAt).not.toBeNull();
+	});
+
+	it('no evidence (empty content, empty reasoning) leaves firstDeltaAt null', () => {
+		beginRun('m7', 'model-a', null, 'c1');
+		noteStreamUpdate('m7', '', undefined, 'c1', { content: '', reasoning_content: '' });
+		expect(get(runs)['m7']?.firstDeltaAt).toBeNull();
+	});
+
+	it('getReasoningText extracts every alias plus relayed event shapes', () => {
+		expect(getReasoningText({ reasoning_content: 'a' })).toBe('a');
+		expect(getReasoningText({ reasoning: 'b' })).toBe('b');
+		expect(getReasoningText({ thinking: 'c' })).toBe('c');
+		expect(getReasoningText({ type: 'response.reasoning_summary_text.delta', delta: 'd' })).toBe(
+			'd'
+		);
+		expect(getReasoningText({ content: 'visible' })).toBe('');
+		expect(getReasoningText(undefined)).toBe('');
+	});
+
+	it('applyStream flags reasoning-only flow and clears the flag once content flows', () => {
+		const entry: RunStats = {
+			messageId: 'm8',
+			chatId: 'c1',
+			modelId: 'model-a',
+			urlIdx: null,
+			startedAt: 1,
+			firstDeltaAt: null,
+			lastDeltaWasReasoning: false,
+			estTokens: 0,
+			usage: null,
+			step: null,
+			steps: [],
+			claimedRequestId: null,
+			context: null,
+			contextThreshold: null,
+			engineActivity: null
+		};
+		const thinking = applyStream(entry, 'm8', '', undefined, 'c1', { reasoning_content: 'x' });
+		expect(thinking.firstDeltaAt).not.toBeNull();
+		expect(thinking.lastDeltaWasReasoning).toBe(true);
+		const answering = applyStream(thinking, 'm8', 'visible', undefined, 'c1', {
+			content: 'visible'
+		});
+		expect(answering.lastDeltaWasReasoning).toBe(false);
+	});
+});
+
+// CR-18 (#R20): the chip's display-phase hierarchy. A bound row's phase wins;
+// own-stream evidence outranks the model-loading word (firstDeltaAt set —
+// including via reasoning deltas per #R19 — must never show 'loading');
+// loading only before any own output; nothing known waits neutrally.
+describe('display phase hierarchy — resolveDisplayPhase (CR-18, #R20)', () => {
+	it('bound row phase wins over loading and own evidence', () => {
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: true,
+				claimablePhase: 'prefill',
+				firstDeltaAt: 1234,
+				hasOwnDeltas: true
+			})
+		).toBe('prefill');
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: false,
+				claimablePhase: 'queued',
+				firstDeltaAt: null,
+				hasOwnDeltas: false
+			})
+		).toBe('queued');
+	});
+
+	it('own first token with reasoning active reads thinking, never loading', () => {
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: true,
+				claimablePhase: null,
+				firstDeltaAt: 1234,
+				hasOwnDeltas: true,
+				reasoningActive: true
+			})
+		).toBe('thinking');
+	});
+
+	it('own first token without reasoning reads generating', () => {
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: true,
+				claimablePhase: null,
+				firstDeltaAt: 1234,
+				hasOwnDeltas: true
+			})
+		).toBe('generating');
+	});
+
+	it('model-loading phase only with loading evidence and no own output yet', () => {
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: true,
+				claimablePhase: null,
+				firstDeltaAt: null,
+				hasOwnDeltas: false
+			})
+		).toBe('loading');
+	});
+
+	it('nothing at all waits for the model', () => {
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: false,
+				claimablePhase: null,
+				firstDeltaAt: null,
+				hasOwnDeltas: false
+			})
+		).toBe('waiting');
 	});
 });

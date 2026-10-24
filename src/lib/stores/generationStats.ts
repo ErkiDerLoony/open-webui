@@ -10,6 +10,7 @@ import { derived, get, writable } from 'svelte/store';
 import {
 	claimOwnRequestId,
 	estimateTokensFromText,
+	getReasoningText,
 	resolveEngineModel,
 	withClaimableRows
 } from '$lib/utils/streamTiming';
@@ -29,6 +30,9 @@ export type RunStats = {
 	urlIdx: number | null;
 	startedAt: number;
 	firstDeltaAt: number | null;
+	// #R19: the most recent streamed delta was reasoning rather than content;
+	// drives the chip's thinking-vs-generating word (#R20).
+	lastDeltaWasReasoning: boolean;
 	estTokens: number;
 	usage: any | null;
 	step: StatsStep | null;
@@ -131,6 +135,7 @@ export const beginRun = (
 			urlIdx,
 			startedAt,
 			firstDeltaAt: null,
+			lastDeltaWasReasoning: false,
 			estTokens: 0,
 			usage: null,
 			step: null,
@@ -222,28 +227,42 @@ export const endRunForChat = (chatId: string | null) => {
 	});
 };
 
-const applyStream = (
+export const applyStream = (
 	entry: RunStats,
 	messageId: string,
 	content: string,
 	usage?: any,
-	chatId?: string | null
+	chatId?: string | null,
+	delta?: any
 ): RunStats => {
 	const now = Date.now();
 	const next: RunStats = { ...entry, messageId };
 	// A run begun before its chat had an id gets claimed by the first real id.
 	if (!next.chatId && chatId) next.chatId = chatId;
-	if (!next.firstDeltaAt && (content?.length ?? 0) > 0) next.firstDeltaAt = now;
-	next.estTokens = Math.max(next.estTokens ?? 0, estimateTokensFromText(content ?? ''));
+	// #R19: reasoning/thinking deltas are generated tokens — a stream that has
+	// only produced reasoning so far has still emitted its first token. The
+	// delta may be a raw chunk (choices delta / relayed Responses event) or a
+	// plain reasoning string; explicit empty content must not mask reasoning.
+	const reasoning = typeof delta === 'string' ? delta : getReasoningText(delta);
+	const hasEvidence = (content?.length ?? 0) > 0 || reasoning.length > 0;
+	if (!next.firstDeltaAt && hasEvidence) next.firstDeltaAt = now;
+	next.estTokens = Math.max(
+		next.estTokens ?? 0,
+		estimateTokensFromText(`${content ?? ''}${reasoning}`)
+	);
+	if ((content?.length ?? 0) > 0) next.lastDeltaWasReasoning = false;
+	else if (reasoning.length > 0) next.lastDeltaWasReasoning = true;
 	if (usage) next.usage = usage;
-	// Real text flowing means we are past any tool/status step; close it.
-	if (content?.length > 0 && next.step && !next.step.endedAt) {
+	// Real text flowing (content or reasoning) means we are past any tool/status
+	// step; close it.
+	if (hasEvidence && next.step && !next.step.endedAt) {
 		next.step = { ...next.step, endedAt: now };
 	}
 	return next;
 };
 
-// One call per streamed chunk: marks first token, updates token estimate.
+// One call per streamed chunk: marks first token (content OR reasoning — #R19),
+// updates token estimate.
 // WS bridge mode can stream under an id different from the one beginRun()
 // stamped, so a still-unbound (never streamed) open run in the SAME chat may
 // be re-keyed onto this message. Unknown ids are ignored: we never move a run
@@ -252,12 +271,16 @@ export const noteStreamUpdate = (
 	messageId: string,
 	content: string,
 	usage?: any,
-	chatId: string | null = null
+	chatId: string | null = null,
+	delta?: any
 ) => {
 	updateRuns((registry) => {
 		const entry = registry[messageId];
 		if (entry) {
-			return { ...registry, [messageId]: applyStream(entry, messageId, content, usage, chatId) };
+			return {
+				...registry,
+				[messageId]: applyStream(entry, messageId, content, usage, chatId, delta)
+			};
 		}
 		// null chatId means the caller has no chat context — never guess across
 		// chats. '' (a chat that has no id yet) may only claim anonymous runs.
@@ -280,14 +303,14 @@ export const noteStreamUpdate = (
 		if (expired.length === 0) {
 			if (unbound.length !== 1) return null;
 			const next = { ...registry };
-			next[messageId] = applyStream(next[unbound[0]], messageId, content, usage, chatId);
+			next[messageId] = applyStream(next[unbound[0]], messageId, content, usage, chatId, delta);
 			delete next[unbound[0]];
 			return next;
 		}
 		const next = { ...registry };
 		for (const key of expired) delete next[key];
 		if (unbound.length === 1) {
-			next[messageId] = applyStream(next[unbound[0]], messageId, content, usage, chatId);
+			next[messageId] = applyStream(next[unbound[0]], messageId, content, usage, chatId, delta);
 			delete next[unbound[0]];
 		}
 		return next;

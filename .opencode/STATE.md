@@ -1,24 +1,45 @@
-# STATE — stats-line reload continuity epic (2026-10-24) — CLOSED (live check pending operator)
+# STATE — phase-progression epic (2026-10-24) — ACTIVE, gates pending
 
-## Delivered
-Live stats line now survives page reload mid-generation (#R18): loadChat rehydrates the run for an undone tail message (startedAt from persisted timestamp), engine-claim gates untouched (R11/R12 hold until own first token). Completed-message lines were and remain rendered from persisted usage — confirmed healthy by operator.
+## Symptom
+Chip shows 'model loading' while reasoning/thinking text visibly streams.
+Root causes: frontend firstDeltaAt counted only `content`, never reasoning
+deltas; chip phase hierarchy showed the loading word ahead of own-stream
+evidence. Backend first_token marks already counted reasoning at tip (5521
+`value or reasoning_content`; 5185 any `.delta`) — functional fix was
+frontend-only; backend sites carry #R19 citations.
 
-## Packages (all accepted)
-| id | hash | gates |
-|----|------|-------|
-| WP-RELOAD | d76cc4b06 | reviewer ACCEPT (A-F; socket-id identity proven via placeholder persistence) + tester PASS (59+63 green, manifest exact) |
-| WP-IMG4 | publish @ 28f0c15dd tip; image Id 458e3037fad7…; registry digest 98bd01ce27c3… (both tags identical, amd64/linux; R18 marker in .map; phase-word marker in chunks/BpsWYInz.js — marker path note below) | gate: registry HTTP + local docker inspect PASS |
-| WP-LIVE2 | pending-operator | see below |
+## Packages
+| id | scope | status |
+|----|-------|--------|
+| WP-PHASE | generationStats.ts + Chat.svelte + streamTiming.ts (getReasoningText, resolveDisplayPhase) + MessageRunStats.svelte + middleware #R19 comments + spec R19/R20 + CR-17/CR-18 tests | accepted-pending-gates |
+| WP-GATE-PHASE | reviewer + tester gates on above | pending |
+| WP-IMG5 | rebuild+push from final tip (marker + digest gates) | pending |
+| WP-LIVE3 | operator redeploy (new digest) + long-thinking reply: chip shows thinking/generating while thoughts stream | pending-operator |
 
-## Notes
-- Marker paths: 'waiting for model' now in chunks/ (Vite hoist), not nodes/ — future gate greps should use /app/build/_app/immutable/ root. needsRunRehydration survives only in .map (minified rename).
-- Gate infra fixed en route: tester rule-1 prose vs frontmatter parity gap made it self-deny valid docker-inspect verbs; prose now lists docker + ruff inspection verbs (permissions were already correct).
-- Carried: ask_user-pending tail rehydrates chip while awaiting input (literal spec match); >30min rehydrated run evicted by stale policy; backlogs unchanged (python3* verb decision, races, E501:420, arm64 stale tags, mise self-update).
+## Design ruling (director)
+- Strict own-evidence gating (#R11/#R12) stays for RATE and TOKENS.
+- #R20 PHASE: bound row phase wins; unbound + own stream -> 'thinking'
+  (reasoning last) / 'generating'; model-loading only with loading evidence and
+  NO own output; else 'waiting for model'.
+- #R19: reasoning/thinking deltas = first-token evidence everywhere.
 
-## WP-LIVE2 — operator steps
-1. On the remote host: docker pull atuin.local:5000/open-webui:0.12.1-stats-amd64 (digest must be 98bd01ce27c3…, not 24d34ad5) and restart the container.
-2. Test: start a long reply, reload the page mid-generation -> live line (time · tok/s · tok) returns within a second, timer restarts from message timestamp; after completion, done label as usual.
-3. Earlier fixes ride along: ring per-turn math, cache/total suppression, chat isolation — spot-check anything previously reported.
+## Verification (WP-PHASE implementation)
+vitest targets 71/71, full frontend suite 75/75; prettier --check clean;
+ast.parse middleware OK; ruff --select=F: 25 errors, tip-identical
+pre-existing upstream noise (none introduced); svelte-check: zero issues
+naming this package's identifiers (5952 repo-baseline pre-existing).
 
-## Spec canon
-.opencode/specs/context-ring-usage.md: R1–R18, CR-01..16 + CR-BE-01..04. Law: per-turn sums only; own-evidence claims; impossible ratios suppressed; percents clamped; per-chat isolation; live state rehydratable.
+## Carried backlog
+- gate-perms: tester allowlist needs python3* verb stanza.
+- races: #R20 phase relaxation could reopen foreign-phase-word display ONLY via
+  claimed rows — rows stay claimable-filtered (#R11); verify none leak.
+- ask_user chip note.
+- E501 middleware:420 (pre-existing).
+- arm64 tags (operating mode is amd64-only).
+- mise provides ruff on PATH.
+
+## Prior epics CLOSED
+session-integrity (digest 24d34ad5), reload continuity (digest 98bd01ce); spec R1-R20 canonical.
+
+## Serialization
+PHASE -> gates -> IMG5 -> operator redeploy -> LIVE3.
