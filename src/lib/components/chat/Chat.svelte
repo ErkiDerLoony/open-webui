@@ -892,6 +892,16 @@
 		cancelBrowserInteractions();
 		bridge?.end();
 		noteChatDebug('navigateHandler start');
+		// local branch: stats — spec #R16: reset per-chat session state before any
+		// branch so the switch-to-new-chat path (chatIdProp falsy, loadChat skipped)
+		// is covered too. The engine mirror is component-held (let engineActivity);
+		// the generationStats store is keyed by chatId, so the arriving chat never
+		// reads departed entries. Guard: same target id keeps its live figures.
+		if ((chatIdProp ?? '') !== ($chatId ?? '')) {
+			serverContextUsage = null;
+			taskIds = null;
+			engineActivity = null;
+		}
 		// Mark the outgoing chat as read before loading the new one.
 		// $chatId still holds the previous chat here — loadChat() updates it.
 		if ($chatId && $chatId !== chatIdProp && !$temporaryChatEnabled) {

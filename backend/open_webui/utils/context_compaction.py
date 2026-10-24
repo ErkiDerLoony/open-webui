@@ -301,11 +301,14 @@ async def get_chat_context_usage(chat: Any, model_id: str | None = None) -> dict
 
 
 def _build_context_usage(tokens: int, threshold: int) -> dict:
+    percent = round((tokens / threshold) * 100) if threshold > 0 else 0
+    # spec #R17: server-provided percent is always within [0, 100]
+    percent = min(100, max(0, percent))
     return {
         'tokens': tokens,
         'estimated_tokens': tokens,
         'threshold': threshold,
-        'percent': round((tokens / threshold) * 100) if threshold > 0 else 0,
+        'percent': percent,
         'source': 'estimated',
     }
 

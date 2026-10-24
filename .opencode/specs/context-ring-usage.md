@@ -21,6 +21,8 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 - **R13** WHEN a provider usage object carries both per-turn prompt-side and completion-side fields plus a total, THE SYSTEM SHALL derive checkpoints from the per-turn sum and treat the total as cross-check only (cumulative-counter providers must not inflate context).
 - **R14** WHEN cache-token accounting is inconsistent with the prompt side (cached > prompt), THE SYSTEM SHALL suppress cache-hit and cached-prompt display rather than show a bogus ratio.
 - **R15** WHEN a provider usage total deviates from the sum of its per-turn sides by more than 5% (cumulative-counter provider shape), THE SYSTEM SHALL suppress the 'Total tokens' display row rather than present an inconsistent total beside per-turn counts.
+- **R16** WHEN the embedded chat view switches chats (including switch to a new/blank chat), THE SYSTEM SHALL reset per-chat session state (server-provided context usage, task ids, engine-activity mirrors) so no figure from the departed chat renders in the arriving one.
+- **R17** THE backend context-usage percent SHALL always be clamped to [0, 100].
 
 ## Conformance tests
 
@@ -40,6 +42,8 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 | CR-12    | R13    | omlx-shaped row → sum wins                                                                                           |
 | CR-13    | R14    | cached>prompt → suppressed                                                                                           |
 | CR-14    | R15    | inconsistent total row suppressed (streamTiming.test.ts CR-14 block)                                                 |
+| CR-15    | R16    | navigateHandler reset block present in Chat.svelte; reviewer static verification                                     |
 | CR-BE-01 | R8     | backend review gate: `normalize_usage`/`merge_usage` in backend/open_webui/utils/response.py tolerate missing fields |
 | CR-BE-02 | R9     | convert_ollama_usage_to_openai null-safety + no fabrication — reviewer gate                                          |
 | CR-BE-03 | R10    | zero-presence alias resolution in context_compaction.py — reviewer gate                                              |
+| CR-BE-04 | R17    | backend percent clamp — reviewer gate                                                                                |
