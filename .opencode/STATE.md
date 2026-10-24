@@ -1,28 +1,28 @@
-# STATE — context ring/stats session-integrity epic (2026-10-24) — ACTIVE (build phase)
+# STATE — context ring/stats session-integrity epic (2026-10-24) — CLOSED
 
-## Goal
-Ring 279.2k/65.5k(100%) + bogus cache-hit + pre-schedule tok/s on live instance. Fixed: sum-wins vs cumulative omlx counters (#R13), impossible cache ratios suppressed (#R14), inconsistent Total row suppressed (#R15), engine attribution own-evidence-only (#R11/#R12), per-chat switch resets (#R16), server percent clamp (#R17). Root causes: omlx session-cumulative total/cached fields; positional engine claims. 65.5k denominator = honest num_ctx (no compact_token_threshold in params — operator wants threshold semantics? set compact_token_threshold in chat/model params).
+## Goal & outcome
+Ring showed 279.2k/65.5k (100%), bogus cache-hit/total rows, pre-schedule tok/s. All fixed, gated, published.
 
-## Packages
-| id | hash | gates | status |
-|----|------|-------|--------|
-| WP-RATE | c925933c9 | reviewer(reject)->fixed + tester | accepted |
-| WP-RATE-FIX | dd94083b4 | reviewer recheck A/B/C + tester | accepted |
-| WP-NUMERATOR | 86b723d76 | reviewer (CR-13 debt->POLISH) + tester 51/51 | accepted |
-| WP-POLISH | 99eeb5221 | reviewer accept + tester pass | accepted |
-| WP-ISOL | b5ebbc29f | reviewer accept (minor notes) + tester pass (python3 cmd = infra, out of contract; CR-BE = reviewer gate; coder PY-OK+ruff clean) | accepted |
-| WP-FINAL-TOUCH | pending commit | one-line engineActivity reset in initEmbeddedDraft (#R16 literal) + prettier | dispatching with IMG3 |
-| WP-IMG3 | pending | build --platform linux/amd64 --build-context mitmca=$HOME/mitmca-context -t open-webui:0.12.1-stats-amd64; retag floating; IP push both; gate: amd64+identical digests+bundle markers ('waiting for model' string, computeContextUsage in .map) | after FINAL-TOUCH | pending |
-| WP-LIVE | — | operator redeploy remote host; ring on young chat: per-turn numerator ≪ window, no bogus cache/total rows, no pre-token tok/s | IMG3 | pending-operator |
+## Root causes (final)
+1. omlx emits SESSION-CUMULATIVE counters (total/input/output/cached_tokens) beside per-turn counts; frontend preferred explicit total -> cumulative numerator (#R13 sum-wins fixes).
+2. Cache/total rows rendered from mixed cumulative vs per-turn fields (#R14/#R15 suppression).
+3. Engine stats attributed positionally -> foreign requests' tok/s/tokens/phase pre-first-token (#R11/#R12 own-evidence claims).
+4. Per-chat state (serverContextUsage/taskIds/engine mirrors) not reset on embedded chat switches (#R16); server percent unclamped (#R17).
+5. Denominator 65.5k = advertised num_ctx — HONEST. compact_token_threshold exists nowhere in DB/chat params.
 
-## Verdict log
-- ISOL reviewer ACCEPT (A-E; initEmbeddedDraft engineActivity judged inert, added opportunistically in FINAL-TOUCH; 3 pre-existing narrow races logged backlog).
-- ISOL tester: 5/6 pass; cmd4 python3* DENIED = gate infra, criterion out of contract (CR-BE-04 reviewer gate; coder PY-OK raw). 55/51 suites green, svelte-check 5952 ≤ baseline, 0 new near navigateHandler.
+## Publication (WP-IMG3)
+open-webui:0.12.1-stats-amd64 + floating 0.12.1-stats; image Id sha256:b9e8c56e59db…; registry manifest digest sha256:24d34ad5c85f… (identical both tags, from push output; cross-tag byte-identity + config-digest verified by tester). Markers in bundle: 'waiting for model' in shipped .js, computeContextUsage in .map. Branch tip fb6e1d9ec.
 
-## Backlog
-1. Tester allowlist: bare python3* for syntax checks — operator call (arbitrary-exec breadth).
-2. Pre-existing races (reviewer notes): pollEngineStats ≤500ms store repopulate across switch; handleManualCompact mid-await write; double-switch null-sentinel defeat at loadChat :2978.
-3. Legacy items: prompt_n junk ValueError, E501:420, float truncation, client nits 2/3/5, mise self-update.
+## Package ledger (all accepted)
+WP-RATE c925933c9 | WP-RATE-FIX dd94083b4 | WP-NUMERATOR 86b723d76 | WP-POLISH 99eeb5221 | WP-ISOL b5ebbc29f | WP-FINAL-TOUCH 7a9a622f7 | WP-IMG3 published fb6e1d9ec. Gates: reviewer accept x5, tester pass x5 (51-55 tests green every cycle), infra denials (python3*, initial manifest inspect) handled per gate-perms.
 
-## Serialization
-FINAL-TOUCH → IMG3 build → IMG-GATE3 → operator redeploy → LIVE screenshot.
+## WP-LIVE — pending OPERATOR
+1. Redeploy remote host: docker pull atuin.local:5000/open-webui:0.12.1-stats-amd64 (digest 24d34ad5c85f…), restart container.
+2. Expect on young chat: numerator ≈ per-turn prompt tokens (tens of k, not cumulative), cache rows only when cached<=prompt, no Total row when provider total inconsistent, chip shows 'waiting for model' until first token, ring resets between chats.
+3. Threshold semantics instead of window: set compact_token_threshold in chat/model params (none stored today; 65.5k is num_ctx).
+
+## Backlog (unchanged items in prior ledgers)
+python3* tester verb (operator breadth call); pollEngineStats/handleManualCompact/double-switch races; prompt_n ValueError; E501:420; float truncation; client nits; mise self-update; stale arm64 registry tags.
+
+## Codified law (spec canonical: .opencode/specs/context-ring-usage.md R1-R17 + CR set)
+Per-turn sum beats provider totals. Cumulative counters never enter context math. Engine rows claimable only with own-stream evidence. Impossible ratios suppressed. Percent ∈ [0,100]. Chat switch resets session state.
