@@ -1,41 +1,21 @@
-# STATE — stats-line reload continuity epic (2026-10-24) — ACTIVE
+# STATE — stats-line reload continuity epic (2026-10-24) — ACTIVE (build phase)
 
-## Goal
-Live run stats line survives a browser reload/navigation while an assistant
-response is still generating (runs registry was memory-only; beginRun fired only
-at submit; loadChat never rehydrated).
+## Prior epic CLOSED
+Session-integrity epic (ring cumulative-inflation, cache/total suppression, engine attribution, chat isolation, R11-R17) closed with image 24d34ad5 (details in git history of this file).
+
+## Goal (current)
+Stats line under an IN-FLIGHT assistant message vanished across page reload (live run state was memory-only). Fix: rehydrate live run for undone tail on loadChat (#R18). Old completed messages unaffected (their line renders from persisted usage + timing — confirmed healthy by operator).
 
 ## Packages
-- WP-RELOAD — DISPATCHED (this session): needsRunRehydration predicate +
-  beginRun opts.startedAt override in generationStats.ts; loadChat rebuilds the
-  run for the active-branch tail assistant message (persisted timestamp, s/ms
-  scale detect). Spec #R18 / CR-16 appended. Gates: vitest 63 green
-  (streamTiming 47 + contextUsage 12 + versionDiff 4), prettier clean.
-- WP-IMG4 — PENDING: rebuild + push 0.12.1-stats from final tip. Marker check:
-  'needsRunRehydration' absent from minified js (renamed away) — use the
-  'waiting for model' marker re-check + record new bundle digest; cross-tag
-  byte-identity per prior procedure (amd64-only, mitmca context, push by IP).
-- WP-LIVE2 — PENDING OPERATOR: redeploy remote host, then reload mid-long-
-  response: live stats line must persist; elapsed times may restart from the
-  persisted message timestamp (not wall-clock submit).
+| id | hash | gates | status |
+|----|------|-------|--------|
+| WP-RELOAD | d76cc4b06 rehydrate in-flight run on loadChat (#R18, CR-16; beginRun startedAt opts; cycle-guarded tail walk; no-clobber guard; R11/R12 gates unaffected — firstDeltaAt stays null until own delta) | reviewer ACCEPT (A-F, id-identity proven via placeholder persistence + socket message_id + current_message_id) + tester PASS (59+63 green, manifest exact) | accepted |
+| WP-IMG4 | pending | build amd64 + mitmca, retag, IP push both; marker: needsRunRehydration in /app/build .map files (renamed in minified .js) | dispatching |
+| WP-LIVE2 | pending-operator | redeploy (pull 0.12.1-stats-amd64, NEW digest != 24d34ad5); live test: start long reply, reload mid-generation -> live line returns (timer may restart from persisted timestamp); completed-message lines unchanged | after IMG4 |
 
-## Verdict log
-(empty — new epic)
+## Notes carried
+- Reviewer info: ask_user-pending tails rehydrate a chip while awaiting user input (literal spec match); rehydrated runs >30min evicted by stale policy (pre-existing). Backlog.
+- Old backlogs intact (python3* tester verb, races list, E501:420, arm64 stale tags, mise self-update).
 
-## Prior: session-integrity epic CLOSED (image 24d34ad5)
-Ring cumulative-counter fixes, own-evidence engine claims, cache/total
-suppression, per-chat reset, percent clamp — R1-R17 + CR set codified in
-.opencode/specs/context-ring-usage.md; published open-webui:0.12.1-stats-amd64
-+ floating tag (manifest digest sha256:24d34ad5c85f…), operator redeploy of
-that image still outstanding from WP-LIVE.
-
-## Backlog (carried)
-python3* tester verb (operator breadth call); pollEngineStats /
-handleManualCompact / double-switch races; prompt_n ValueError; E501:420; float
-truncation; client nits; mise self-update; stale arm64 registry tags.
-
-## Codified law (spec canonical: .opencode/specs/context-ring-usage.md R1-R18 + CR set)
-Per-turn sum beats provider totals. Cumulative counters never enter context
-math. Engine rows claimable only with own-stream evidence. Impossible ratios
-suppressed. Percent ∈ [0,100]. Chat switch resets session state. A reload
-mid-generation reconstructs the live run (#R18).
+## Serialization
+IMG4 build -> image gate -> operator redeploy -> LIVE2 verify -> close.
