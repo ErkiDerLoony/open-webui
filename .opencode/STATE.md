@@ -4,7 +4,7 @@
 Ring showed 279.2k/65.5k (100%), bogus cache-hit/total rows, pre-schedule tok/s. All fixed, gated, published.
 
 ## Root causes (final)
-1. omlx emits SESSION-CUMULATIVE counters (total/input/output/cached_tokens) beside per-turn counts; frontend preferred explicit total -> cumulative numerator (#R13 sum-wins fixes).
+1. omlx emits SESSION-CUMULATIVE counters (total/input/output/cached_tokens) beside per-turn counts; frontend preferred explicit total -> cumulative numerator (#R13 sum-wins fixes). Scope of cumulative fields: per-model-process evidence (counter grew ACROSS chats 137k->244k, dropped within one chat 137k->96k after a recorded 39s model reload), not per-chat; per-turn fields unaffected; ring now consumes per-turn only, so ambiguity is moot (decisive check: alternate two chats on new image).
 2. Cache/total rows rendered from mixed cumulative vs per-turn fields (#R14/#R15 suppression).
 3. Engine stats attributed positionally -> foreign requests' tok/s/tokens/phase pre-first-token (#R11/#R12 own-evidence claims).
 4. Per-chat state (serverContextUsage/taskIds/engine mirrors) not reset on embedded chat switches (#R16); server percent unclamped (#R17).
