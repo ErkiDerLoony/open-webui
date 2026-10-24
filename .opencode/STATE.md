@@ -1,27 +1,28 @@
 # STATE — context ring/stats session-integrity epic (2026-10-24) — ACTIVE
 
 ## Goal
-Live image (0c7ee07df build) shows: (A) ring 100% "279.2k / 65.5k, source measured" on a young uncompacted chat; (B) tok/s shown at Enter before omlx schedules our request. Operator suspects cross-chat stats mixing.
-
-## Evidence so far
-- Tooltip self-contradiction: Cache hit 66% ⇒ prompt≈75.8k; Cached prompt row ⇒ 50048 tokens; ring numerator ⇒ 279.2k. Same usage blob, three inconsistent numbers ⇒ provider-shape misinterpretation, not state leak (web UI sidebar = fresh remount).
-- 65.5k denominator ≈ 65536 (window or configured threshold — unresolved which).
-- WP-RATE landed (c925933c9): engine rows claim only with own-stream evidence (firstDeltaAt + startedAt≥run−250ms + model/chat match); tok/s zero pre-first-token; runStats mirror chat-scoped; anon runs expire at 60s. 34 vitest green. AWAITING GATES.
+Live ring: 279.2k/65.5k (100%), source measured, cache-hit 66% on a young uncompacted chat; tok/s appeared pre-schedule. ROOT CAUSES FOUND:
+- tok/s: engine activity attributed positionally to foreign requests — FIXED (c925933c9 + dd94083b4).
+- ring 100%: omlx emits SESSION-CUMULATIVE counters (total_tokens/input_tokens/output_tokens/cached_tokens) alongside per-turn prompt_tokens/completion_tokens in one flat blob (evidence: stored rows prompt 45k+compl 2k vs total 615k; cached 425k > prompt 45k). getUsageTokenCount prefers explicit total when total>=sum -> cumulative inflation. No compact_token_threshold exists in stored chat params -> denominator = num_ctx fallback 65536 (65.5k). Cache-hit ratio mixes cumulative cached with per-turn prompt -> bogus %.
+NOTE: WP-DIAG found the container absent on this host; DB ~/.open-webui/webui.db last write Oct 9 (structurally representative of omlx shape, not the exact session).
 
 ## Packages
 | id | scope | acceptance | depends_on | status |
 |----|-------|------------|------------|--------|
-| WP-RATE | streamTiming.ts(+test), stores/generationStats.ts, MessageRunStats.svelte, Chat.svelte, spec R11/R12 | R11/R12 + CR-09/10 gates (reviewer+tester) | — | dispatched (gates pending) |
-| WP-DIAG | read-only: raw usage JSON from container DB (latest rows), omlx /models Qwen3.8-Flash entry, container env base URLs | raw artifacts reported — resolves cache-inclusive-vs-exclusive + true window + which field sums to 279.2k | — | dispatched |
-| WP-CACHE-FIX | contextUsage.ts (+getUsageTokenCount semantics), streamTiming.ts cache rows, backend utils/response.py cache handling, spec amendment (R3/R8 cache-additivity by shape) | CR-05 amended; ring numerator consistent with cached/pct rows (same base); reviewer+tester | WP-DIAG | pending |
-| WP-ISOL | Chat.svelte navigateHandler/switch resets (serverContextUsage, taskIds, engine mirrors); backend percent clamp context_compaction.py:308 + client clamp | R13/R14 (draft at dispatch): chat-switch isolation; percent ∈ [0,100] everywhere | WP-CACHE-FIX | pending |
-
-## Serialization
-WP-RATE gates → (WP-DIAG ∥ gates: diag is container-side, no repo overlap) → WP-CACHE-FIX → WP-ISOL → close. Repo file overlaps: RATE(done) → CACHE(contextUsage/streamTiming) → ISOL(Chat/backend) — strictly sequential on repo; diag parallel-safe.
+| WP-RATE | (c925933c9) attribution primitives + chat scoping | R11/R12 CR-09/10 | — | accepted (reviewer A-E items; docs item moved into WP-NUMERATOR) |
+| WP-RATE-FIX | (dd94083b4) claimable-only display view + phase words | CR-11 + spec CR-11 registration | WP-RATE | code accepted (reviewer A/B/C PASS); spec CR-11 registration + tests -> WP-NUMERATOR+tester |
+| WP-NUMERATOR | contextUsage.ts getUsageTokenCount (sum-wins rule), streamTiming.ts cache-hit guard, specs CR-11 registration + new R13/R14 + CR-12/13 rows, tests | omlx-shaped row {prompt 45307, compl 2226, total 615849, cached 425938} -> checkpoint 47533; cached>prompt -> cache rows suppressed; all vitest green | WP-RATE-FIX | dispatched |
+| WP-ISOL | Chat.svelte navigateHandler resets serverContextUsage/taskIds/engine mirrors (embedded path); backend percent clamp context_compaction.py:308 | R15/R16 draft at dispatch | WP-NUMERATOR | pending |
+| WP-IMG3 | rebuild+push 0.12.1-stats after fixes | gate: amd64 + digest + fix-in-bundle | WP-ISOL | pending |
 
 ## Verdict log
-- (pending WP-RATE gates)
+- WP-RATE reviewer: REJECT (positional token leak) -> dd94083b4 closes code (A/B/C PASS on recheck); docs CR-11 registration owed -> WP-NUMERATOR.
+- Prior fixes already shipped in image 0c7ee07df? NO — image predates WP-RATE; current live image lacks ring fixes? Image was built from tip 7d043cb7e which INCLUDES R1-R10 ring fixes but not WP-RATE/WP-NUMERATOR.
 
 ## Decisions
-- Cache-token additivity is shape-dependent: Anthropic native (input_tokens exclusive + cache_read/creation additive) vs OpenAI-compatible (prompt_tokens cache-INCLUSIVE, details.cached_tokens informational — must NOT add). WP-DIAG determines omlx's actual shape before spec amendment wording.
-- Residual positional phase-wording leak in MessageRunStats (queued/prefill text pre-first-token) accepted for now — rate attribution was the defect; phase UX preserved.
+- Sum-wins rule: provider total_tokens is cross-check only, never numerator when both per-turn sides resolve (cumulative-counter providers exist — omlx proven).
+- Denominator 65.5k = num_ctx fallback is HONEST (advertised window); operator set no compaction threshold in DB — tell operator where to set it if they want threshold semantics instead of window semantics.
+- Container not on this host during diag — ask operator where the live instance runs (host/port, DB path) so a fresh raw usage row can confirm after rebuild.
+
+## Serialization
+NUMERATOR → gates → ISOL → gates → IMG3 → verify live (needs operator: live host URL/DB).

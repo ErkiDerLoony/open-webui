@@ -2,7 +2,7 @@
 
 # Spec: context ring token usage
 
-Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (CR-01..08) and `src/lib/utils/streamTiming.test.ts` (CR-09/CR-10).
+Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (CR-01..08/CR-12) and `src/lib/utils/streamTiming.test.ts` (CR-09/CR-10/CR-11).
 
 ## Requirements (EARS)
 
@@ -18,6 +18,8 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 - **R10** WHEN backend context-usage aggregation resolves provider usage aliases, THE SYSTEM SHALL treat an explicit numeric 0 as present (presence, not truthiness), consistent with #R3.
 - **R11** WHEN the composer or chip displays engine-derived rate/tokens, THE SYSTEM SHALL attribute only rows claimed for the current chat's own run (evidence: run has first streamed token; row started no earlier than the run) — never another chat's or a background task's activity.
 - **R12** WHILE a run has produced no first token, THE SYSTEM SHALL display zero/blank for tokens-per-second regardless of engine activity rows.
+- **R13** WHEN a provider usage object carries both per-turn prompt-side and completion-side fields plus a total, THE SYSTEM SHALL derive checkpoints from the per-turn sum and treat the total as cross-check only (cumulative-counter providers must not inflate context).
+- **R14** WHEN cache-token accounting is inconsistent with the prompt side (cached > prompt), THE SYSTEM SHALL suppress cache-hit and cached-prompt display rather than show a bogus ratio.
 
 ## Conformance tests
 
@@ -33,6 +35,9 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 | CR-08    | R1     | summary checkpoint (`contextSummary`) slices prior messages; tail still counted                                      |
 | CR-09    | R11    | isClaimable unit tests: foreign row (pre-firstDeltaAt, older startedAt, foreign chat) never claimed                  |
 | CR-10    | R12    | liveTps/engine contribution = 0 before firstDeltaAt despite active rows                                              |
+| CR-11    | R11    | chip display gated on own evidence (streamTiming.test.ts CR-11 block)                                                |
+| CR-12    | R13    | omlx-shaped row → sum wins                                                                                           |
+| CR-13    | R14    | cached>prompt → suppressed                                                                                           |
 | CR-BE-01 | R8     | backend review gate: `normalize_usage`/`merge_usage` in backend/open_webui/utils/response.py tolerate missing fields |
 | CR-BE-02 | R9     | convert_ollama_usage_to_openai null-safety + no fabrication — reviewer gate                                          |
 | CR-BE-03 | R10    | zero-presence alias resolution in context_compaction.py — reviewer gate                                              |

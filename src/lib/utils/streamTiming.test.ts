@@ -12,12 +12,17 @@
 // WP-R11-DISPLAY appends CR-11 (#R11): the chip's display selectors are built
 // from claimable-filtered rows, so foreign busy rows leak neither token counts
 // nor queued/prefill phase words.
+// WP-NUMERATOR appends CR-13 (#R14): cached > prompt is an impossible per-turn
+// ratio (cumulative-vs-per-turn provider mismatch) — cache-hit percent and the
+// cached-prompt tooltip rows are suppressed rather than shown bogus.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
 import {
 	claimOwnRequestId,
 	computeLiveTps,
+	formatContextTooltipHtml,
 	formatUsageTooltipHtml,
+	getCacheHitPercent,
 	getDisplayGenTokens,
 	getDisplayPromptTokens,
 	getDisplayView,
@@ -402,6 +407,74 @@ describe('chip display gated on own evidence — getDisplayView (CR-11, #R11)', 
 		expect(getDisplayView(foreignModel, null, null, ctx).phase).toBe('idle');
 		expect(getDisplayGenTokens(null)).toBeNull();
 		expect(getDisplayPromptTokens(undefined)).toBeNull();
+	});
+});
+
+// CR-13 (#R14): cached > prompt is impossible per-turn — a provider emitting a
+// session-cumulative cached counter beside a per-turn prompt count (omlx shape)
+// must not produce a bogus cache-hit percent or an inflated cached-prompt row.
+describe('impossible cache ratio suppressed (CR-13, #R14)', () => {
+	// Real omlx usage row: cached_tokens (425938) dwarfs per-turn prompt (45307).
+	const omlxUsage = {
+		prompt_tokens: 45307,
+		completion_tokens: 2226,
+		total_tokens: 615849,
+		prompt_tokens_details: { cached_tokens: 425938 }
+	};
+
+	it('getCacheHitPercent returns null when cached exceeds prompt', () => {
+		expect(getCacheHitPercent(omlxUsage)).toBeNull();
+		expect(getCacheHitPercent({ prompt_tokens: 800, cached_tokens: 1600 })).toBeNull();
+	});
+
+	it('getCacheHitPercent keeps valid ratios (incl. the cached === prompt boundary)', () => {
+		expect(
+			getCacheHitPercent({ prompt_tokens: 1000, prompt_tokens_details: { cached_tokens: 500 } })
+		).toBe(50);
+		expect(getCacheHitPercent({ prompt_tokens: 800, cached_tokens: 800 })).toBe(100);
+		expect(getCacheHitPercent({ prompt_tokens: 300, cached_tokens: 301 })).toBeNull();
+	});
+
+	it('message tooltip suppresses Cache hit and Cached tokens rows on cached > prompt', () => {
+		const html = formatUsageTooltipHtml(omlxUsage);
+		expect(html).not.toContain('Cache hit');
+		expect(html).not.toContain('Cached tokens');
+		// The valid per-turn rows still render.
+		expect(html).toContain('Prompt tokens');
+		expect(html).toContain('Completion tokens');
+	});
+
+	it('message tooltip keeps cache rows when the ratio is valid', () => {
+		const html = formatUsageTooltipHtml({
+			prompt_tokens: 1000,
+			completion_tokens: 100,
+			prompt_tokens_details: { cached_tokens: 500 }
+		});
+		expect(html).toContain('Cache hit');
+		expect(html).toContain('50%');
+		expect(html).toContain('Cached tokens');
+	});
+
+	it('context ring tooltip suppresses Cache hit and Cached prompt on cached > prompt', () => {
+		const html = formatContextTooltipHtml(omlxUsage, { tokens: 47533, threshold: 80000 });
+		expect(html).not.toContain('Cache hit');
+		expect(html).not.toContain('Cached prompt');
+		// The ring's own context row is unaffected.
+		expect(html).toContain('Context');
+	});
+
+	it('context ring tooltip keeps cache rows when the ratio is valid', () => {
+		const html = formatContextTooltipHtml(
+			{
+				prompt_tokens: 1000,
+				completion_tokens: 100,
+				prompt_tokens_details: { cached_tokens: 500 }
+			},
+			{ tokens: 1100, threshold: 80000 }
+		);
+		expect(html).toContain('Cache hit');
+		expect(html).toContain('50%');
+		expect(html).toContain('Cached prompt');
 	});
 });
 

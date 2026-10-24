@@ -379,10 +379,14 @@ export const getDisplayPromptTokens = (view: EnginePhaseInfo | null | undefined)
 	null;
 
 // Prompt cache hit share from a usage payload (OpenAI prompt_tokens_details).
+// #R14: cached > prompt is impossible per-turn — that ratio means the provider
+// emitted a session-cumulative cached counter beside a per-turn prompt count
+// (omlx-style mismatch), so return null rather than a bogus percentage.
 export const getCacheHitPercent = (usage: any): number | null => {
 	const cached = usage?.prompt_tokens_details?.cached_tokens ?? usage?.cached_tokens ?? null;
 	const prompt = usage?.prompt_tokens ?? usage?.input_tokens ?? null;
 	if (!cached || !prompt || prompt <= 0) return null;
+	if (cached > prompt) return null;
 	return Math.min(100, Math.round((cached / prompt) * 100));
 };
 
@@ -440,8 +444,12 @@ export const formatUsageTooltipHtml = (usage: any): string => {
 	if (prompt) rows.push(['Prompt tokens', prompt.toLocaleString()]);
 	if (completion) rows.push(['Completion tokens', completion.toLocaleString()]);
 	if (total) rows.push(['Total tokens', total.toLocaleString()]);
-	if (cached) rows.push(['Cached tokens', cached.toLocaleString()]);
-	if (cached && prompt)
+	// #R14: cached > prompt is an impossible per-turn ratio (cumulative-vs-
+	// per-turn provider mismatch) — suppress the cache rows instead of showing
+	// a bogus hit percentage or an inflated cached count.
+	const cacheImpossible = cached !== null && prompt !== null && cached > prompt;
+	if (cached && !cacheImpossible) rows.push(['Cached tokens', cached.toLocaleString()]);
+	if (cached && prompt && !cacheImpossible)
 		rows.push(['Cache hit', `${Math.min(100, Math.round((cached / prompt) * 100))}%`]);
 	if (ttft !== null && ttft > 0) rows.push(['Time to first token', formatDuration(ttft)]);
 	if (thinking !== null && thinking > 0) rows.push(['Thinking time', formatDuration(thinking)]);
@@ -512,11 +520,22 @@ export const formatContextTooltipHtml = (
 	if (typeof source === 'string' && source)
 		rows.push(['Source', source === 'estimated' ? 'estimated' : 'measured']);
 	const cachedPct = num(ctx?.cachedPct) ?? getCacheHitPercent(usage);
-	if (cachedPct !== null) rows.push(['Cache hit', `${Math.round(cachedPct)}%`]);
 	const cached = num(
 		ctx?.cached ?? usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens
 	);
-	if (cached !== null && cached > 0) rows.push(['Cached prompt', cached.toLocaleString()]);
+	const promptTokens = num(ctx?.prompt ?? usage.prompt_tokens ?? usage.input_tokens);
+	// #R14: cached > prompt is an impossible per-turn ratio (cumulative-vs-
+	// per-turn provider mismatch, e.g. omlx) — suppress the cache rows instead
+	// of showing a bogus hit percentage or an inflated cached count.
+	const cacheImpossible =
+		cached !== null &&
+		cached > 0 &&
+		promptTokens !== null &&
+		promptTokens > 0 &&
+		cached > promptTokens;
+	if (cachedPct !== null && !cacheImpossible) rows.push(['Cache hit', `${Math.round(cachedPct)}%`]);
+	if (cached !== null && cached > 0 && !cacheImpossible)
+		rows.push(['Cached prompt', cached.toLocaleString()]);
 	if (rows.length === 0) return '';
 	const body = rows
 		.map(

@@ -1,5 +1,6 @@
 // Conformance tests for the composer context ring contract
-// (.opencode/specs/context-ring-usage.md). Ids CR-01..CR-08 map to spec #R1-#R8.
+// (.opencode/specs/context-ring-usage.md). Ids CR-01..CR-08 map to spec
+// #R1-#R8; CR-12 covers #R13 (per-turn sum beats cumulative provider totals).
 import { describe, it, expect } from 'vitest';
 import {
 	computeContextUsage,
@@ -103,10 +104,12 @@ describe('context ring usage (CR-01..CR-08)', () => {
 		expect(hasPromptSideUsage(anthropic)).toBe(true);
 		expect(getUsageTokenCount(anthropic)).toBe(1700);
 
-		// OpenAI explicit total wins only when it is ≥ the sum of known parts
+		// #R13 sum-wins: once both per-turn sides resolve, an explicit total
+		// NEVER replaces the sum — not even one that is ≥ the sum (a larger
+		// total is exactly the cumulative-counter shape that inflated the ring).
 		expect(
 			getUsageTokenCount({ prompt_tokens: 100, completion_tokens: 50, total_tokens: 180 })
-		).toBe(180);
+		).toBe(150);
 		expect(
 			getUsageTokenCount({ prompt_tokens: 100, completion_tokens: 50, total_tokens: 120 })
 		).toBe(150);
@@ -214,5 +217,53 @@ describe('context ring source label', () => {
 		});
 		expect(estimated).not.toBeNull();
 		expect(estimated!.source).toBe('estimated');
+	});
+});
+
+// CR-12 (#R13): cumulative-counter providers (omlx) emit session-cumulative
+// total_tokens beside per-turn prompt/completion fields; the checkpoint must be
+// the per-turn sum, never the inflated total (100% ring root cause).
+describe('per-turn sum beats cumulative totals (CR-12, #R13)', () => {
+	it('omlx-shaped row → checkpoint is the per-turn sum, not the session total', () => {
+		const omlxUsage = {
+			prompt_tokens: 45307,
+			completion_tokens: 2226,
+			total_tokens: 615849,
+			prompt_tokens_details: { cached_tokens: 425938 }
+		};
+		// 45307 + 2226 = 47533; the 615849 session-cumulative total must not win.
+		expect(getUsageTokenCount(omlxUsage)).toBe(47533);
+
+		// End-to-end at the checkpoint level: the ring numerator stays per-turn.
+		const usage = computeContextUsage({
+			messages: [{ role: 'assistant', content: 'ok', usage: omlxUsage }],
+			systemText: '',
+			threshold: 80000
+		});
+		expect(usage).not.toBeNull();
+		expect(usage!.tokens).toBe(47533);
+		expect(usage!.source).toBe('measured');
+		// ~59% — nowhere near the 100% ring the total-based numerator produced.
+		expect(usage!.percent).toBe(Math.round((47533 / 80000) * 100));
+		expect(usage!.percent).toBeLessThan(100);
+	});
+
+	it('single-side + total infers the missing side when plausible', () => {
+		// Only the completion side resolves → prompt inferred as 500 − 100 = 400.
+		expect(getUsageTokenCount({ completion_tokens: 100, total_tokens: 500 })).toBe(500);
+		// Implausible total (below the resolved side) → keep the resolved sum.
+		expect(getUsageTokenCount({ prompt_tokens: 100, total_tokens: 50 })).toBe(100);
+	});
+
+	it('Anthropic-exclusive cache fields fold when no OpenAI prompt_tokens is present', () => {
+		// input_tokens excludes the cache (Anthropic-style names, no
+		// prompt_tokens) → fold valid: 1000 + 2000 + 50.
+		expect(
+			getUsageTokenCount({
+				input_tokens: 1000,
+				cache_read_input_tokens: 2000,
+				output_tokens: 50
+			})
+		).toBe(3050);
 	});
 });

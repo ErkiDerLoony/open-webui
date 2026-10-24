@@ -48,15 +48,25 @@ export const hasPromptSideUsage = (usage: UsageBlob): boolean =>
 // Provider-agnostic checkpoint total: prompt side + completion side, with
 // field precedence OpenAI → Ollama → llama.cpp → Anthropic (#R3). Anthropic
 // input_tokens excludes cached/creation cache tokens, so those are added on
-// top of the resolved prompt side. An explicit total (OpenAI total_tokens)
-// wins only when it is ≥ the sum of the known parts.
+// top of the resolved prompt side (Anthropic-style fields only — see below).
+//
+// Consistency note (omlx evidence): some providers emit session-cumulative
+// counters beside the per-turn fields, e.g.
+// {prompt_tokens:45307, completion_tokens:2226, total_tokens:615849,
+//  prompt_tokens_details:{cached_tokens:425938}} — there total_tokens is the
+// session total, not prompt+completion (45307+2226=47533). Trusting the
+// explicit total inflated the ring numerator to session-cumulative values
+// (100% ring). Sum-wins rule (#R13): when BOTH the prompt side and the
+// completion side resolve from per-turn fields, the result is that sum and an
+// explicit total NEVER replaces it. Total is consulted only when fewer than
+// both sides resolve: it infers the missing side (total − resolved side) when
+// plausible (total ≥ resolved side), otherwise the resolved parts stand.
 export const getUsageTokenCount = (usage?: UsageBlob): number => {
 	if (!usage || typeof usage !== 'object') return 0;
 
 	// Prompt-side precedence: OpenAI → Ollama → llama.cpp → Anthropic.
-	// llama.cpp counts prompt_n + cache_n; Anthropic adds cache fields on top
-	// of input_tokens. Presence (not truthiness) decides the family (#R3).
-	let prompt: number;
+	// Presence (not truthiness) decides the family (#R3).
+	let prompt: number | null = null;
 	if (hasUsageField(usage, 'prompt_tokens')) {
 		prompt = numUsageField(usage, 'prompt_tokens');
 	} else if (hasUsageField(usage, 'prompt_eval_count')) {
@@ -64,22 +74,33 @@ export const getUsageTokenCount = (usage?: UsageBlob): number => {
 	} else if (hasUsageField(usage, 'prompt_n') || hasUsageField(usage, 'cache_n')) {
 		prompt = numUsageField(usage, 'prompt_n') + numUsageField(usage, 'cache_n');
 	} else if (hasUsageField(usage, 'input_tokens')) {
+		// Anthropic cache_read/cache_creation are EXCLUSIVE of input_tokens and
+		// fold into the prompt side — but only under Anthropic-style field names
+		// with no OpenAI prompt_tokens present: OpenAI
+		// prompt_tokens_details.cached_tokens is INCLUSIVE of prompt_tokens, so
+		// folding it on top double-counts (the 279k overshoot).
 		prompt =
 			numUsageField(usage, 'input_tokens') +
 			numUsageField(usage, 'cache_read_input_tokens') +
 			numUsageField(usage, 'cache_creation_input_tokens');
-	} else {
-		prompt = 0;
 	}
 
-	const completion =
-		firstPresentField(usage, ['completion_tokens', 'output_tokens', 'eval_count', 'predicted_n']) ??
-		0;
+	const completion = firstPresentField(usage, [
+		'completion_tokens',
+		'output_tokens',
+		'eval_count',
+		'predicted_n'
+	]);
 
-	const sum = prompt + completion;
+	// #R13: both per-turn sides resolved → the sum wins; a cumulative provider
+	// total never replaces it.
+	if (prompt !== null && completion !== null) return prompt + completion;
 
+	// Fewer than both sides resolved: use the total to infer the missing side
+	// only when plausible (total ≥ resolved side); else keep the resolved sum.
 	const total = hasUsageField(usage, 'total_tokens') ? numUsageField(usage, 'total_tokens') : null;
-	return total !== null && total >= sum ? total : sum;
+	const resolved = (prompt ?? 0) + (completion ?? 0);
+	return total !== null && total >= resolved ? total : resolved;
 };
 
 // Rough length/4 estimator (no tokenizer available client-side).
