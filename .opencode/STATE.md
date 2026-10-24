@@ -1,45 +1,22 @@
-# STATE — phase-progression epic (2026-10-24) — ACTIVE, gates pending
+# STATE — phase-progression epic (2026-10-24) — ACTIVE (build phase)
 
-## Symptom
-Chip shows 'model loading' while reasoning/thinking text visibly streams.
-Root causes: frontend firstDeltaAt counted only `content`, never reasoning
-deltas; chip phase hierarchy showed the loading word ahead of own-stream
-evidence. Backend first_token marks already counted reasoning at tip (5521
-`value or reasoning_content`; 5185 any `.delta`) — functional fix was
-frontend-only; backend sites carry #R19 citations.
+## Delivered
+Chip showed 'model loading' while reasoning streamed. Fixed at d8f5b9dc5: reasoning/thinking deltas count as first-token evidence every layer (#R19: getReasoningText alias chain wired into applyStream/noteStreamUpdate + all Chat.svelte delta sites; backend marks already reasoning-inclusive — comment-only diff); phase hierarchy (#R20 resolveDisplayPhase): bound claimable-row phase > thinking/generating (own evidence) > loading-only-when-no-evidence > 'waiting for model'. Rate/token strictness (#R11/#R12) untouched.
 
 ## Packages
-| id | scope | status |
-|----|-------|--------|
-| WP-PHASE | generationStats.ts + Chat.svelte + streamTiming.ts (getReasoningText, resolveDisplayPhase) + MessageRunStats.svelte + middleware #R19 comments + spec R19/R20 + CR-17/CR-18 tests | accepted-pending-gates |
-| WP-GATE-PHASE | reviewer + tester gates on above | pending |
-| WP-IMG5 | rebuild+push from final tip (marker + digest gates) | pending |
-| WP-LIVE3 | operator redeploy (new digest) + long-thinking reply: chip shows thinking/generating while thoughts stream | pending-operator |
+| id | hash | gates | status |
+|----|------|-------|--------|
+| WP-PHASE | d8f5b9dc5 (amended; orig 79602f46d rejected narrow on spec-md prettier) | reviewer ACCEPT (boundPhase claimable-filtered; loading unreachable w/ evidence; backend comment-only) + tester PASS (71/75 green, prettier clean incl. md) | accepted |
+| WP-IMG5 | pending | build amd64+mitmca from tip d8f5b9dc5, retag floating, IP push both; marker 'waiting for model' grep at /app/build/_app/immutable/ ROOT (nodes/ stale — Vite hoists to chunks/); new digest != 98bd01ce | dispatching |
+| WP-LIVE3 | pending-operator | redeploy (digest gate) + long-thinking reply: thinking/generating shown while thoughts stream; loading never shown once text visible | pending |
 
-## Design ruling (director)
-- Strict own-evidence gating (#R11/#R12) stays for RATE and TOKENS.
-- #R20 PHASE: bound row phase wins; unbound + own stream -> 'thinking'
-  (reasoning last) / 'generating'; model-loading only with loading evidence and
-  NO own output; else 'waiting for model'.
-- #R19: reasoning/thinking deltas = first-token evidence everywhere.
-
-## Verification (WP-PHASE implementation)
-vitest targets 71/71, full frontend suite 75/75; prettier --check clean;
-ast.parse middleware OK; ruff --select=F: 25 errors, tip-identical
-pre-existing upstream noise (none introduced); svelte-check: zero issues
-naming this package's identifiers (5952 repo-baseline pre-existing).
-
-## Carried backlog
-- gate-perms: tester allowlist needs python3* verb stanza.
-- races: #R20 phase relaxation could reopen foreign-phase-word display ONLY via
-  claimed rows — rows stay claimable-filtered (#R11); verify none leak.
-- ask_user chip note.
-- E501 middleware:420 (pre-existing).
-- arm64 tags (operating mode is amd64-only).
-- mise provides ruff on PATH.
+## Notes
+- P1 defect logged: coder self-gates must enumerate prettier over EVERY staged file incl. md; payload rule adopted (gate manifest = commit manifest, .py excluded — ruff instead).
+- ruff: middleware.py `ruff format --check` clean; F-baseline 25 pre-existing errors carried (fork-wide, not ours).
+- Carried backlog: python3* tester verb decision, races (pollEngineStats/handleManualCompact/double-switch), ask_user-pending chip reactivation note, E501:420, arm64 stale registry tags, mise self-update.
 
 ## Prior epics CLOSED
-session-integrity (digest 24d34ad5), reload continuity (digest 98bd01ce); spec R1-R20 canonical.
+session-integrity (image 24d34ad5), reload continuity (image 98bd01ce). Spec canon now R1–R20, CR-01..18 + CR-BE-01..04.
 
 ## Serialization
-PHASE -> gates -> IMG5 -> operator redeploy -> LIVE3.
+IMG5 build -> image gate -> operator redeploy -> LIVE3 verify -> close.
