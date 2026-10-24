@@ -17,7 +17,9 @@
 		formatTokens,
 		formatUsageTooltipHtml,
 		getClaimedRequestStats,
-		getEnginePhase,
+		getDisplayGenTokens,
+		getDisplayPromptTokens,
+		getDisplayView,
 		resolveDurationMs,
 		resolveEngineModel,
 		type EngineModelActivity
@@ -148,8 +150,8 @@
 				modelId: r?.modelId ?? null,
 				chatId: r?.chatId ?? chatId
 			});
-			// Drop stale claims so phase falls back to the positional pick
-			// inside getClaimedRequestStats / getEnginePhase.
+			// Drop stale claims so the view falls back to the positional pick
+			// over claimable rows (inside getDisplayView).
 			if (claimedId && !getClaimedRequestStats(engineModel, claimedId)) claimedId = null;
 			nowTick = Date.now();
 		} catch {
@@ -174,11 +176,15 @@
 			loggedActivity = false;
 		}
 	}
-	$: claimed = getClaimedRequestStats(engineModel, claimedId);
-	// Merged engine view: id-matched claim first, positional pick when the
-	// rows carry no request_id (claimRequestId then hands back a synthetic
-	// claim, and getEnginePhase covers a model resolved mid-poll).
-	$: view = claimed ?? getEnginePhase(engineModel);
+	// Merged engine view for the chip (spec #R11): narrowed to rows THIS run
+	// may claim — id-matched claim first, positional pick inside the claimable
+	// rows when the engine omits request_ids. Before this run's own stream
+	// produced its first token nothing is claimable, so the view stays neutral:
+	// foreign rows' token counts and queued/prefill phase words never surface.
+	$: view = getDisplayView(engineModel, run, claimedId, {
+		modelId: run?.modelId ?? null,
+		chatId: run?.chatId ?? chatId
+	});
 
 	// Active backend status/event text for this run ('' when the backend has
 	// sent none). Reasoning-flavoured statuses map to the reasoning word.
@@ -221,7 +227,8 @@
 			return `loading model${eta ? ` ~${Math.ceil(eta)}s` : ''}`;
 		}
 
-		// 2) Queued behind other requests.
+		// 2) Queued behind other requests — view is claimable-filtered, so
+		//    queue/prefill words can only describe THIS run's own rows (#R11).
 		if (view.phase === 'waiting') {
 			const pos = view.waiting?.queue_position ?? 0;
 			return pos > 0 ? `queued #${pos}` : 'queued';
@@ -252,8 +259,10 @@
 		//    backend has produced its first signal.
 		if (liveSec > 2 && backendSeen()) return 'thinking';
 
-		// 8) Cold start: submitted, nothing back from the backend yet.
-		return 'loading';
+		// 8) Cold start: submitted, nothing back from the backend yet and no
+		//    claimable engine row — neutral waiting word (same wording as the
+		//    ChatStatsBar fallback), not a foreign row's queue/prefill state.
+		return 'waiting for model';
 	};
 
 	const storeTps = () => {
@@ -265,20 +274,18 @@
 
 	const liveTps = () => computeLiveTps(view, run, storeTps(), clientRate);
 
-	// Generated-token count on the chip: engine-reported for the claimed request
-	// when available, else the client length/4 estimate carried on the run.
-	const liveGenTokens = () => view.generating?.generated_tokens ?? run?.estTokens ?? 0;
+	// Generated-token count on the chip: engine-reported only for rows carrying
+	// THIS run's ownership evidence (spec #R11), else the client length/4
+	// estimate carried on the run — pre-first-token this yields 0 and the
+	// segment is omitted, never another request's counter.
+	const liveGenTokens = () => getDisplayGenTokens(view) ?? run?.estTokens ?? 0;
 
 	// Prompt size mid-stream: usage wins when the provider already sent it,
-	// else whatever the claimed engine row reports (prefill/generating/waiting).
+	// else a claimable engine row (prefill/generating/waiting) reports it;
+	// foreign rows contribute nothing (spec #R11).
 	const livePromptTokens = () => {
 		if (promptTokens > 0) return promptTokens;
-		return (
-			view.prefill?.prompt_tokens ??
-			view.generating?.prompt_tokens ??
-			view.waiting?.prompt_tokens ??
-			0
-		);
+		return getDisplayPromptTokens(view) ?? 0;
 	};
 
 	const liveChipText = () => {

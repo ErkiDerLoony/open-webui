@@ -347,6 +347,37 @@ export const getClaimedRequestStats = (
 	return null;
 };
 
+// The engine view the live chip renders (spec #R11): built exclusively from
+// rows this run may claim. Id-matched claim first; positional pick inside the
+// claimable rows for engines that omit request_ids. When nothing is claimable
+// — before the run's own first token, or while only foreign rows are busy —
+// the view stays neutral (idle, or loading without row payloads), so another
+// request's token counts and queued/prefill phase words cannot surface here.
+export const getDisplayView = (
+	model: EngineModelActivity | null | undefined,
+	run: ClaimRunView | null | undefined,
+	claimedId: string | null,
+	ctx?: { modelId?: string | null; chatId?: string | null }
+): EnginePhaseInfo => {
+	const claimable = withClaimableRows(model, run, ctx);
+	return getClaimedRequestStats(claimable, claimedId) ?? getEnginePhase(claimable);
+};
+
+// Generated-token count for the chip: engine-reported only from a claimable
+// generating row (spec #R11). Null means "no own evidence yet" — callers fall
+// back to their client-side estimate or omit the segment; they never render
+// another request's counter.
+export const getDisplayGenTokens = (view: EnginePhaseInfo | null | undefined): number | null =>
+	view?.generating?.generated_tokens ?? null;
+
+// Prompt-token count for the chip from claimable engine rows only (spec #R11);
+// null when no own row reports one.
+export const getDisplayPromptTokens = (view: EnginePhaseInfo | null | undefined): number | null =>
+	view?.prefill?.prompt_tokens ??
+	view?.generating?.prompt_tokens ??
+	view?.waiting?.prompt_tokens ??
+	null;
+
 // Prompt cache hit share from a usage payload (OpenAI prompt_tokens_details).
 export const getCacheHitPercent = (usage: any): number | null => {
 	const cached = usage?.prompt_tokens_details?.cached_tokens ?? usage?.cached_tokens ?? null;

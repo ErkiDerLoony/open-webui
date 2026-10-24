@@ -2,7 +2,7 @@
 
 # Spec: context ring token usage
 
-Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (ids `CR-<n>`).
+Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (CR-01..08) and `src/lib/utils/streamTiming.test.ts` (CR-09/CR-10).
 
 ## Requirements (EARS)
 

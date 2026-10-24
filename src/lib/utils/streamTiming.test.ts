@@ -9,12 +9,18 @@
 // (.opencode/specs/context-ring-usage.md #R11/#R12): engine activity is
 // connection-global, so rows may only be claimed for a run whose own stream
 // produced its first token, and the chip shows zero tok/s before that.
+// WP-R11-DISPLAY appends CR-11 (#R11): the chip's display selectors are built
+// from claimable-filtered rows, so foreign busy rows leak neither token counts
+// nor queued/prefill phase words.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
 import {
 	claimOwnRequestId,
 	computeLiveTps,
 	formatUsageTooltipHtml,
+	getDisplayGenTokens,
+	getDisplayPromptTokens,
+	getDisplayView,
 	isClaimable,
 	resolveDurationMs,
 	withClaimableRows
@@ -287,6 +293,115 @@ describe('zero rate before first token — computeLiveTps (CR-10, #R12)', () => 
 	it('returns 0 for idle or missing views and runs', () => {
 		expect(computeLiveTps(null, run(12_000))).toBe(0);
 		expect(computeLiveTps({ phase: 'idle' }, null)).toBe(0);
+	});
+});
+
+// CR-11 (#R11): the chip's display selectors derive exclusively from rows the
+// run may claim. A foreign busy row (older startedAt, no own firstDeltaAt)
+// surfaces no engine token counts and no queued/prefill phase words — the view
+// is neutral; once the run's own row is claimable, its numbers reappear.
+describe('chip display gated on own evidence — getDisplayView (CR-11, #R11)', () => {
+	const run = (firstDeltaAt: number | null): RunStats =>
+		({
+			messageId: 'm1',
+			chatId: 'c1',
+			modelId: 'model-a',
+			urlIdx: null,
+			startedAt: 10_000,
+			firstDeltaAt,
+			estTokens: 0,
+			usage: null,
+			step: null,
+			steps: [],
+			claimedRequestId: null,
+			context: null,
+			contextThreshold: null,
+			engineActivity: null
+		}) as RunStats;
+	const ctx = { modelId: 'model-a', chatId: 'c1' };
+	// Busy engine whose every row predates this run's submit — all foreign.
+	const foreignModel = {
+		id: 'model-a',
+		prefilling: [
+			{
+				request_id: 'p-bg',
+				processed: 5000,
+				total: 8000,
+				speed: 900,
+				elapsed: 30,
+				startedAt: 5_000,
+				prompt_tokens: 8000
+			}
+		],
+		generating: [
+			{
+				request_id: 'g-bg',
+				elapsed_seconds: 25,
+				startedAt: 4_000,
+				generated_tokens: 1200,
+				tokens_per_second: 40,
+				prompt_tokens: 9000
+			}
+		],
+		waiting: [
+			{
+				request_id: 'w-bg',
+				queue_position: 3,
+				elapsed_seconds: 20,
+				startedAt: 6_000,
+				prompt_tokens: 4000
+			}
+		]
+	};
+
+	it('renders a neutral view without engine tokens for foreign rows before own first token', () => {
+		const view = getDisplayView(foreignModel, run(null), null, ctx);
+		expect(view.phase).toBe('idle');
+		expect(view.prefill).toBeUndefined();
+		expect(view.generating).toBeUndefined();
+		expect(view.waiting).toBeUndefined();
+		expect(getDisplayGenTokens(view)).toBeNull();
+		expect(getDisplayPromptTokens(view)).toBeNull();
+	});
+
+	it('stays neutral while only foreign rows are busy, even after the first token', () => {
+		// Older startedAt marks the rows foreign regardless of firstDeltaAt:
+		// no queued #N / prefill NN% / token counts may come from them.
+		const view = getDisplayView(foreignModel, run(12_000), null, ctx);
+		expect(view.phase).toBe('idle');
+		expect(view.waiting).toBeUndefined();
+		expect(view.prefill).toBeUndefined();
+		expect(getDisplayGenTokens(view)).toBeNull();
+		expect(getDisplayPromptTokens(view)).toBeNull();
+		// Rate gating unchanged: this neutral view contributes 0 tok/s.
+		expect(computeLiveTps(view, run(12_000))).toBe(0);
+	});
+
+	it('surfaces own-row tokens once firstDeltaAt is set and rows are claimable', () => {
+		const ownRow = {
+			request_id: 'own',
+			elapsed_seconds: 1,
+			startedAt: 10_300,
+			generated_tokens: 120,
+			tokens_per_second: 38,
+			prompt_tokens: 900
+		};
+		const model = { ...foreignModel, generating: [...foreignModel.generating, ownRow] };
+		const claim = claimOwnRequestId(model, run(12_000), null, ctx);
+		expect(claim).toBe('own');
+		const view = getDisplayView(model, run(12_000), claim, ctx);
+		expect(view.phase).toBe('generating');
+		expect(view.generating?.request_id).toBe('own');
+		expect(view.waiting).toBeUndefined();
+		expect(getDisplayGenTokens(view)).toBe(120);
+		expect(getDisplayPromptTokens(view)).toBe(900);
+	});
+
+	it('returns null tokens for missing views and runs', () => {
+		expect(getDisplayView(null, run(12_000), null, ctx).phase).toBe('idle');
+		expect(getDisplayView(foreignModel, null, null, ctx).phase).toBe('idle');
+		expect(getDisplayGenTokens(null)).toBeNull();
+		expect(getDisplayPromptTokens(undefined)).toBeNull();
 	});
 });
 

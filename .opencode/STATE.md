@@ -1,25 +1,27 @@
-# STATE — image rebuild 0.12.1-stats amd64 (2026-10-24) — CLOSED
+# STATE — context ring/stats session-integrity epic (2026-10-24) — ACTIVE
 
 ## Goal
-Ship repo tip 7d043cb7e (context-ring fixes + backend hardening) as open-webui:0.12.1-stats-amd64 + floating 0.12.1-stats at 10.10.10.10:5000. DONE — image also live per operator ("new image started").
+Live image (0c7ee07df build) shows: (A) ring 100% "279.2k / 65.5k, source measured" on a young uncompacted chat; (B) tok/s shown at Enter before omlx schedules our request. Operator suspects cross-chat stats mixing.
 
-## Artifacts (gate-verified)
-- Registry digest (both tags): sha256:bc872ee563931d829e210fc9360ce8079a945090cd65928cae7ab4a6e00f62df (manifest 4288B)
-- Image config Id: sha256:0482daa5e61f…, linux/amd64, 19 layers; floating tag == amd64 build.
-- Fix presence: computeContextUsage confirmed in shipped bundle via source-map match (minified js renames symbols).
-- Contains: R1-R10 spec cycle (ring numerator/denominator fixes, measured label, backend usage hardening).
+## Evidence so far
+- Tooltip self-contradiction: Cache hit 66% ⇒ prompt≈75.8k; Cached prompt row ⇒ 50048 tokens; ring numerator ⇒ 279.2k. Same usage blob, three inconsistent numbers ⇒ provider-shape misinterpretation, not state leak (web UI sidebar = fresh remount).
+- 65.5k denominator ≈ 65536 (window or configured threshold — unresolved which).
+- WP-RATE landed (c925933c9): engine rows claim only with own-stream evidence (firstDeltaAt + startedAt≥run−250ms + model/chat match); tok/s zero pre-first-token; runStats mirror chat-scoped; anon runs expire at 60s. 34 vitest green. AWAITING GATES.
 
 ## Packages
-WP-GATE-DOCKER accepted | WP-IMG-BUILD accepted (local evidence: Id 0482daa5e61f, amd64) | WP-IMG-PUSH-FIX accepted (tags pre-existing; curl catalog proof; digest reconfirm) | WP-IMG-GATE-2 PASSED (manifest inspect --insecure --verbose, both tags, identical digest bc872ee56393).
+| id | scope | acceptance | depends_on | status |
+|----|-------|------------|------------|--------|
+| WP-RATE | streamTiming.ts(+test), stores/generationStats.ts, MessageRunStats.svelte, Chat.svelte, spec R11/R12 | R11/R12 + CR-09/10 gates (reviewer+tester) | — | dispatched (gates pending) |
+| WP-DIAG | read-only: raw usage JSON from container DB (latest rows), omlx /models Qwen3.8-Flash entry, container env base URLs | raw artifacts reported — resolves cache-inclusive-vs-exclusive + true window + which field sums to 279.2k | — | dispatched |
+| WP-CACHE-FIX | contextUsage.ts (+getUsageTokenCount semantics), streamTiming.ts cache rows, backend utils/response.py cache handling, spec amendment (R3/R8 cache-additivity by shape) | CR-05 amended; ring numerator consistent with cached/pct rows (same base); reviewer+tester | WP-DIAG | pending |
+| WP-ISOL | Chat.svelte navigateHandler/switch resets (serverContextUsage, taskIds, engine mirrors); backend percent clamp context_compaction.py:308 + client clamp | R13/R14 (draft at dispatch): chat-switch isolation; percent ∈ [0,100] everywhere | WP-CACHE-FIX | pending |
+
+## Serialization
+WP-RATE gates → (WP-DIAG ∥ gates: diag is container-side, no repo overlap) → WP-CACHE-FIX → WP-ISOL → close. Repo file overlaps: RATE(done) → CACHE(contextUsage/streamTiming) → ISOL(Chat/backend) — strictly sequential on repo; diag parallel-safe.
 
 ## Verdict log
-- Gate1 FAIL reclassified false-failure: plain `docker manifest inspect` cannot resolve against plain-HTTP registry (needs --insecure) — registry content was present all along (catalog proof). Local-cmd half passed before halt.
-- Gate2 PASS: both refs resolve linux/amd64, digests byte-identical, config matches local image Id.
+- (pending WP-RATE gates)
 
-## Lessons to carry (for LESSONS.md next write)
-L9-candidate: on this host, registry gates against 10.10.10.10:5000 MUST use `docker manifest inspect --insecure` (or buildx imagetools) — plain form "no such manifest" is a false-failure signature; encode in future image-gate payloads.
-Registry still carries stale arm64 tags (0.12.0/0.12.1-stats-arm64) — cleanup is operator's call (deletion verbs intentionally gate-forbidden).
-Registry persistence: verify data volume mount so tags survive registry restarts (diagnostics suggested persistence OK — tags present overnight).
-
-## Remaining backlog
-Unchanged code backlog in prior closed sections: compaction checkpoint truthiness (:295/:365), prompt_n junk hardening, helper dedup, E501:420, float truncation, client nits 2/3/5, tester.md prose parity, mise self-update.
+## Decisions
+- Cache-token additivity is shape-dependent: Anthropic native (input_tokens exclusive + cache_read/creation additive) vs OpenAI-compatible (prompt_tokens cache-INCLUSIVE, details.cached_tokens informational — must NOT add). WP-DIAG determines omlx's actual shape before spec amendment wording.
+- Residual positional phase-wording leak in MessageRunStats (queued/prefill text pre-first-token) accepted for now — rate attribution was the defect; phase UX preserved.
