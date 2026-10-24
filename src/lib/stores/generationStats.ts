@@ -106,9 +106,17 @@ export const beginRun = (
 	messageId: string,
 	modelId: string,
 	urlIdx: number | null,
-	chatId: string | null = null
+	chatId: string | null = null,
+	opts: { startedAt?: number } = {}
 ) => {
-	const startedAt = Date.now();
+	// #R18: reload rehydration passes the persisted message timestamp so the
+	// reconstructed run's clock matches when generation actually started;
+	// submit-path callers omit it and get Date.now(). Non-finite values fall
+	// back rather than poison the registry entry.
+	const startedAt =
+		typeof opts.startedAt === 'number' && Number.isFinite(opts.startedAt)
+			? opts.startedAt
+			: Date.now();
 	updateRuns((registry) => {
 		const next: Record<string, RunStats> = {};
 		for (const [key, entry] of Object.entries(registry)) {
@@ -140,6 +148,14 @@ export const beginRun = (
 		return next;
 	});
 };
+
+// #R18: whether a freshly-loaded chat needs the live run reconstructed for a
+// persisted message. An assistant message that is neither done nor errored may
+// still be generating; content/output emptiness must NOT gate this (the stream
+// may not have produced its first token yet), but a missing message object is
+// never rehydrated.
+export const needsRunRehydration = (msg: any): boolean =>
+	!!msg && msg.role === 'assistant' && !msg.done && !msg.error;
 
 // A chat with no id yet (brand-new chat) owns anonymous entries; once a real
 // id shows up it claims them. Chat-less calls would smear one chat's engine

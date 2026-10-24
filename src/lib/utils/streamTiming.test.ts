@@ -37,6 +37,7 @@ import {
 	beginRun,
 	currentChatId,
 	endRun,
+	needsRunRehydration,
 	noteStreamUpdate,
 	runStats,
 	runs,
@@ -521,6 +522,73 @@ describe('inconsistent total row suppressed (CR-14, #R15)', () => {
 		expect(
 			formatUsageTooltipHtml({ prompt_tokens: 1000, completion_tokens: 50, total_tokens: 1200 })
 		).not.toContain('Total tokens');
+	});
+});
+
+// WP-RELOAD appends CR-16 (#R18): reloading a chat mid-generation must
+// reconstruct the in-flight run so the stats line survives. The pure
+// rehydration predicate is store-side (generationStats), verified here
+// alongside beginRun's opts.startedAt override (persisted timestamp path).
+describe('run rehydration predicate — needsRunRehydration (CR-16, #R18)', () => {
+	it('true for an undone assistant message with partial content', () => {
+		expect(needsRunRehydration({ role: 'assistant', content: 'half a t', done: false })).toBe(true);
+	});
+
+	it('true for an undone assistant with no content yet (pre-first-token)', () => {
+		expect(needsRunRehydration({ role: 'assistant', content: '', done: false })).toBe(true);
+		expect(needsRunRehydration({ role: 'assistant' })).toBe(true);
+	});
+
+	it('false for a done assistant message', () => {
+		expect(needsRunRehydration({ role: 'assistant', content: 'full', done: true })).toBe(false);
+	});
+
+	it('false for a user message', () => {
+		expect(needsRunRehydration({ role: 'user', content: 'hi', done: false })).toBe(false);
+	});
+
+	it('false for null/undefined message', () => {
+		expect(needsRunRehydration(null)).toBe(false);
+		expect(needsRunRehydration(undefined)).toBe(false);
+	});
+
+	it('false for an assistant message carrying an error', () => {
+		expect(
+			needsRunRehydration({ role: 'assistant', content: 'half', done: false, error: 'boom' })
+		).toBe(false);
+	});
+});
+
+describe('beginRun startedAt override (CR-16, #R18)', () => {
+	beforeEach(() => {
+		endRun();
+		currentChatId.set('');
+	});
+	afterEach(() => {
+		endRun();
+		currentChatId.set('');
+		vi.useRealTimers();
+	});
+
+	it('honours opts.startedAt so a rehydrated run carries the persisted start', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(50_000);
+		beginRun('m1', 'model-a', null, 'c1', { startedAt: 20_000 });
+		const run = get(runs)['m1'];
+		expect(run?.startedAt).toBe(20_000);
+		expect(run?.firstDeltaAt).toBeNull();
+		expect(run?.chatId).toBe('c1');
+	});
+
+	it('falls back to Date.now() without a usable override', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(50_000);
+		beginRun('m2', 'model-a', null, 'c1');
+		expect(get(runs)['m2']?.startedAt).toBe(50_000);
+		beginRun('m3', 'model-a', null, 'c1', {});
+		expect(get(runs)['m3']?.startedAt).toBe(50_000);
+		beginRun('m4', 'model-a', null, 'c1', { startedAt: Number.NaN });
+		expect(get(runs)['m4']?.startedAt).toBe(50_000);
 	});
 });
 

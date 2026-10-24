@@ -2,7 +2,7 @@
 
 # Spec: context ring token usage
 
-Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (CR-01..08, CR-12) and `src/lib/utils/streamTiming.test.ts` (CR-09/CR-10/CR-11/CR-13/CR-14).
+Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its feeding logic). Packages cite `#R<n>` ids; conformance tests live in `src/lib/utils/contextUsage.test.ts` (CR-01..08, CR-12) and `src/lib/utils/streamTiming.test.ts` (CR-09/CR-10/CR-11/CR-13/CR-14/CR-16).
 
 ## Requirements (EARS)
 
@@ -23,6 +23,7 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 - **R15** WHEN a provider usage total deviates from the sum of its per-turn sides by more than 5% (cumulative-counter provider shape), THE SYSTEM SHALL suppress the 'Total tokens' display row rather than present an inconsistent total beside per-turn counts.
 - **R16** WHEN the embedded chat view switches chats (including switch to a new/blank chat), THE SYSTEM SHALL reset per-chat session state (server-provided context usage, task ids, engine-activity mirrors) so no figure from the departed chat renders in the arriving one.
 - **R17** THE backend context-usage percent SHALL always be clamped to [0, 100].
+- **R18** WHEN a chat is loaded (navigation or reload) while its latest assistant response is still generating, THE SYSTEM SHALL reconstruct that run's live stats state so the stats line remains visible, using persisted timestamps where available.
 
 ## Conformance tests
 
@@ -43,6 +44,7 @@ Contract for the composer context ring (`ChatStats/ContextRing.svelte` and its f
 | CR-13    | R14    | cached>prompt → suppressed                                                                                           |
 | CR-14    | R15    | inconsistent total row suppressed (streamTiming.test.ts CR-14 block)                                                 |
 | CR-15    | R16    | navigateHandler reset block present in Chat.svelte; reviewer static verification                                     |
+| CR-16    | R18    | needsRunRehydration unit tests + loadChat rehydration wiring (reviewer static)                                       |
 | CR-BE-01 | R8     | backend review gate: `normalize_usage`/`merge_usage` in backend/open_webui/utils/response.py tolerate missing fields |
 | CR-BE-02 | R9     | convert_ollama_usage_to_openai null-safety + no fabrication — reviewer gate                                          |
 | CR-BE-03 | R10    | zero-presence alias resolution in context_compaction.py — reviewer gate                                              |

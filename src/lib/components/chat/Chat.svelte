@@ -56,9 +56,11 @@
 		currentChatId,
 		endRunForChat,
 		endRunIf,
+		needsRunRehydration,
 		noteOutputEvent,
 		noteStatus,
 		noteStreamUpdate,
+		runs,
 		setEngineActivity,
 		setRunContext
 	} from '$lib/stores/generationStats';
@@ -3000,6 +3002,46 @@
 							}
 						}
 					}
+				}
+
+				// #R18: reload/navigation mid-generation — the runs registry is
+				// memory-only and beginRun() normally fires only at submit, so the
+				// live stats line for an in-flight response vanished on reload.
+				// Rebuild the run for the active branch's last assistant message
+				// while it is still generating (and has no registry entry). Placed
+				// after the serverContextUsage/taskIds refresh so ordering matches
+				// the live submit flow, and after the done-marking passes so an
+				// interrupted (taskless) response stays closed. Elapsed time then
+				// starts from the persisted timestamp when the message carries one.
+				let branchNode = history.currentId ? history.messages[history.currentId] : null;
+				const branchSeen = new Set<string>();
+				let inFlightTail: any = null;
+				while (branchNode?.id && !branchSeen.has(branchNode.id)) {
+					branchSeen.add(branchNode.id);
+					if (branchNode.role === 'assistant') {
+						inFlightTail = branchNode;
+						break;
+					}
+					branchNode = branchNode.parentId ? history.messages[branchNode.parentId] : null;
+				}
+				if (inFlightTail && needsRunRehydration(inFlightTail) && !get(runs)[inFlightTail.id]) {
+					// Persisted timestamps are seconds- or ms-scaled; anything
+					// unusable falls back to now (clock-skew-safe enough for an
+					// elapsed counter).
+					const tsRaw = inFlightTail.timestamp ?? inFlightTail.created_at;
+					const startedAt =
+						typeof tsRaw === 'number' && Number.isFinite(tsRaw) && tsRaw > 0
+							? tsRaw < 1e11
+								? tsRaw * 1000
+								: tsRaw
+							: Date.now();
+					beginRun(
+						inFlightTail.id,
+						inFlightTail.model ?? selectedModels.find((id) => id) ?? '',
+						null,
+						chatIdProp || $chatId || '',
+						{ startedAt }
+					);
 				}
 
 				await tick();
