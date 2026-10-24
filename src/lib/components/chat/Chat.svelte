@@ -53,6 +53,7 @@
 	// Local branch: live inference stats (ChatStats)
 	import {
 		beginRun,
+		currentChatId,
 		endRunForChat,
 		endRunIf,
 		noteOutputEvent,
@@ -879,6 +880,9 @@
 	}
 
 	let saveControlsTimer;
+	// local branch: stats — keep the run mirror scoped to the viewed chat
+	// (covers the ''→real id transition when a brand-new chat is created).
+	$: currentChatId.set($chatId ?? '');
 	$: if (!loading && !$temporaryChatEnabled && $chatId && params && chatFiles) {
 		clearTimeout(saveControlsTimer);
 		saveControlsTimer = setTimeout(saveControls, 400);
@@ -1872,6 +1876,7 @@
 
 	onMount(() => {
 		loading = true;
+		currentChatId.set($chatId ?? ''); // local branch: stats — scope the run mirror to this view's chat
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);

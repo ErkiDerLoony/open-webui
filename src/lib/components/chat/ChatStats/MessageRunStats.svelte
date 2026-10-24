@@ -10,7 +10,8 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { runs, type RunStats } from '$lib/stores/generationStats';
 	import {
-		claimRequestId,
+		claimOwnRequestId,
+		computeLiveTps,
 		formatDuration,
 		formatRate,
 		formatTokens,
@@ -140,7 +141,13 @@
 				!!m &&
 				(m.prefilling?.length ?? 0) + (m.generating?.length ?? 0) + (m.waiting?.length ?? 0) > 0;
 			engineModel = hasRows(fresh) ? fresh : hasRows(mirrored) ? mirrored : (fresh ?? mirrored);
-			claimedId = claimRequestId(engineModel, claimedId);
+			// Ownership evidence required before claiming (spec #R11): no claim
+			// attempts until THIS run's stream produced its first token, and only
+			// rows that started with the run are candidates.
+			claimedId = claimOwnRequestId(engineModel, r, claimedId, {
+				modelId: r?.modelId ?? null,
+				chatId: r?.chatId ?? chatId
+			});
 			// Drop stale claims so phase falls back to the positional pick
 			// inside getClaimedRequestStats / getEnginePhase.
 			if (claimedId && !getClaimedRequestStats(engineModel, claimedId)) claimedId = null;
@@ -256,14 +263,7 @@
 		return (run.estTokens ?? 0) / elapsed;
 	};
 
-	const liveTps = () => {
-		// Prefill speed is the honest rate while the prompt is being eaten —
-		// a decode number from a concurrent request would lie on this chip.
-		if (view.phase === 'prefilling') return view.prefill?.speed ?? 0;
-		const engine = view.phase === 'generating' ? (view.generating?.tokens_per_second ?? 0) : 0;
-		const rate = Math.max(engine, storeTps(), clientRate);
-		return rate > 0 ? rate : 0;
-	};
+	const liveTps = () => computeLiveTps(view, run, storeTps(), clientRate);
 
 	// Generated-token count on the chip: engine-reported for the claimed request
 	// when available, else the client length/4 estimate carried on the run.

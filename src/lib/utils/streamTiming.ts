@@ -8,6 +8,14 @@ export type EnginePrefillRow = {
 	speed?: number;
 	eta?: number | null;
 	elapsed?: number | null;
+	// Absolute epoch-ms when the engine began the request; when absent it is
+	// derived from elapsed (see getEngineRowStartedAt).
+	startedAt?: number | null;
+	// Origin chat when the engine echoes one (future-proofing; rows are
+	// connection-global today). See isClaimable.
+	chat_id?: string | null;
+	// Model id when the engine echoes one on the row (see isClaimable).
+	modelId?: string | null;
 	prompt_tokens?: number;
 	detail?: string;
 };
@@ -18,6 +26,9 @@ export type EngineGeneratingRow = {
 	generated_tokens?: number;
 	tokens_per_second?: number;
 	last_activity_age_seconds?: number | null;
+	startedAt?: number | null;
+	chat_id?: string | null;
+	modelId?: string | null;
 	prompt_tokens?: number;
 	max_tokens?: number | null;
 };
@@ -26,6 +37,9 @@ export type EngineWaitingRow = {
 	request_id?: string;
 	queue_position?: number;
 	elapsed_seconds?: number | null;
+	startedAt?: number | null;
+	chat_id?: string | null;
+	modelId?: string | null;
 	prompt_tokens?: number;
 };
 
@@ -193,6 +207,113 @@ export const claimRequestId = (
 		0;
 	const newest = [...rows].sort((a, b) => elapsedOf(a) - elapsedOf(b))[0];
 	return newest.request_id ?? null;
+};
+
+// Own-run attribution (spec #R11/#R12): the engine activity endpoint is
+// connection-global, so a positional pick alone cannot tell our request from
+// foreign traffic (title/follow-up background tasks, other chats' streams).
+// Evidence required before a row may be claimed for a run:
+//  1. the run has produced its first streamed token (firstDeltaAt set) —
+//     before that, oMLX may not even have scheduled our request, so any busy
+//     row belongs to someone else;
+//  2. the row started no earlier than the run began (250 ms clock-alignment
+//     slack for submit-vs-schedule skew) — a row that predates our run cannot
+//     be ours;
+//  3. when the row carries a model id, it must be the run's model; when the
+//     caller supplies its chat id and the row echoes one, they must match.
+// Rows without age evidence (no startedAt and no elapsed field) pass the age
+// check: partial oMLX builds omit both, and the firstDeltaAt gate plus the
+// model match remain the attribution signal.
+const CLAIM_START_SLACK_MS = 250;
+
+export type ClaimRunView = {
+	startedAt: number;
+	firstDeltaAt: number | null;
+	chatId?: string | null;
+};
+
+// Absolute epoch-ms a row began. Prefer the engine's own startedAt; else
+// derive from its elapsed seconds against the current clock; null when the
+// row carries neither.
+export const getEngineRowStartedAt = (
+	row: EnginePrefillRow | EngineGeneratingRow | EngineWaitingRow | null | undefined,
+	now: number = Date.now()
+): number | null => {
+	if (!row) return null;
+	if (typeof row.startedAt === 'number' && Number.isFinite(row.startedAt)) return row.startedAt;
+	const elapsedSec =
+		(row as EngineGeneratingRow).elapsed_seconds ??
+		(row as EngineWaitingRow).elapsed_seconds ??
+		(row as EnginePrefillRow).elapsed ??
+		null;
+	if (elapsedSec === null || !Number.isFinite(elapsedSec) || elapsedSec < 0) return null;
+	return now - elapsedSec * 1000;
+};
+
+export const isClaimable = (
+	row: EnginePrefillRow | EngineGeneratingRow | EngineWaitingRow | null | undefined,
+	run: ClaimRunView | null | undefined,
+	ctx?: { modelId?: string | null; chatId?: string | null }
+): boolean => {
+	if (!row || !run) return false;
+	if (run.firstDeltaAt === null || run.firstDeltaAt === undefined) return false;
+	const expectedModel = ctx?.modelId ?? null;
+	if (expectedModel && row.modelId != null && row.modelId !== expectedModel) return false;
+	const expectedChat = ctx?.chatId ?? run.chatId ?? null;
+	if (expectedChat && row.chat_id != null && row.chat_id !== expectedChat) return false;
+	const startedAt = getEngineRowStartedAt(row);
+	if (startedAt !== null && startedAt < run.startedAt - CLAIM_START_SLACK_MS) return false;
+	return true;
+};
+
+// Model narrowed to the rows a run may legitimately claim (isClaimable). The
+// synthetic-claim path in claimRequestId keys off row presence, so it keeps
+// working on the filtered model.
+export const withClaimableRows = (
+	model: EngineModelActivity | null | undefined,
+	run: ClaimRunView | null | undefined,
+	ctx?: { modelId?: string | null; chatId?: string | null }
+): EngineModelActivity | null => {
+	if (!model) return null;
+	return {
+		...model,
+		prefilling: (model.prefilling ?? []).filter((r) => isClaimable(r, run, ctx)),
+		generating: (model.generating ?? []).filter((r) => isClaimable(r, run, ctx)),
+		waiting: (model.waiting ?? []).filter((r) => isClaimable(r, run, ctx))
+	};
+};
+
+// Claim only for runs with ownership evidence: no claim attempts before the
+// run's own stream produced its first token, and only rows that started with
+// the run are candidates (spec #R11).
+export const claimOwnRequestId = (
+	model: EngineModelActivity | null | undefined,
+	run: ClaimRunView | null | undefined,
+	currentClaim: string | null,
+	ctx?: { modelId?: string | null; chatId?: string | null }
+): string | null => {
+	if (!model || !run) return null;
+	if (run.firstDeltaAt === null || run.firstDeltaAt === undefined) return null;
+	return claimRequestId(withClaimableRows(model, run, ctx), currentClaim);
+};
+
+// Engine-derived tok/s for the live chip (spec #R12): contributes 0 until the
+// run's own stream has produced its first token, regardless of how busy the
+// engine rows look. storeTps/clientRate (client-observed, already gated on
+// streamed content) are merged by the caller unchanged.
+export const computeLiveTps = (
+	view: { phase?: string; prefill?: EnginePrefillRow; generating?: EngineGeneratingRow } | null,
+	run: ClaimRunView | null | undefined,
+	storeTps: number = 0,
+	clientRate: number = 0
+): number => {
+	if (!run || run.firstDeltaAt === null || run.firstDeltaAt === undefined) return 0;
+	// Prefill speed is the honest rate while the prompt is being eaten —
+	// a decode number from a concurrent request would lie on this chip.
+	if (view?.phase === 'prefilling') return view.prefill?.speed ?? 0;
+	const engine = view?.phase === 'generating' ? (view.generating?.tokens_per_second ?? 0) : 0;
+	const rate = Math.max(engine, storeTps, clientRate);
+	return rate > 0 ? rate : 0;
 };
 
 export type ClaimedRequestStats = {

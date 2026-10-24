@@ -8,9 +8,10 @@
 // only ever care about that one (ChatStatsBar).
 import { derived, get, writable } from 'svelte/store';
 import {
-	claimRequestId,
+	claimOwnRequestId,
 	estimateTokensFromText,
-	resolveEngineModel
+	resolveEngineModel,
+	withClaimableRows
 } from '$lib/utils/streamTiming';
 import type { EngineActivity, EngineModelActivity } from '$lib/utils/streamTiming';
 
@@ -42,17 +43,36 @@ export type RunStats = {
 // starts in that chat. MAX_RUNS bounds the registry if nothing ever ends.
 const STALE_RUN_MS = 30 * 60 * 1000;
 const MAX_RUNS = 16;
+// Anonymous (chatId='') runs only legitimately exist between submit and the
+// response stamping the new chat's id — a few seconds. One older than this at
+// adoption time is leftover from an abandoned/aborted chat: expire it instead
+// of letting a foreign stream claim it days later (spec #R11).
+const ANON_RUN_MAX_AGE_MS = 60 * 1000;
 
 export const runs = writable<Record<string, RunStats>>({});
 
-// Mirror of the newest-by-startedAt entry, refreshed by every mutation so the
-// pre-existing single-run consumers keep working.
+// The chat the view currently belongs to ('' before a brand-new chat has an
+// id). Chat.svelte stamps this on mount and on every chatId change; the
+// runStats mirror scopes to it so background generations in other chats can
+// never become "the newest run" this view claims engine stats from.
+export const currentChatId = writable<string>('');
+
+// Mirror of the newest run IN THE CURRENT CHAT, refreshed by every mutation so
+// the pre-existing single-run consumers keep working. With no view context
+// (null) it degrades to the previous newest-across-all behavior.
 export const runStats = writable<RunStats | null>(null);
 
 const newestRun = (registry: Record<string, RunStats>): RunStats | null => {
+	const view = get(currentChatId);
 	let newest: RunStats | null = null;
 	for (const entry of Object.values(registry)) {
 		if (!entry) continue;
+		if (view !== null && view !== undefined) {
+			const entryChatId = entry.chatId ?? '';
+			// ''-tagged runs are only visible to the view while the current
+			// chat itself has no id yet (new-chat page).
+			if (entryChatId !== view && !(view === '' && entryChatId === '')) continue;
+		}
 		if (!newest || (entry.startedAt ?? 0) >= (newest.startedAt ?? 0)) newest = entry;
 	}
 	return newest;
@@ -157,9 +177,9 @@ export const setRunContext = (
 	updateRuns((registry) => mergeIntoChat(registry, chatId, { context, contextThreshold }));
 };
 
-// Whole-app reset: forget every run. Per-chat idles use endRunForChat().
+// Whole-app reset: forget every run (mirror refreshes through writeRuns).
+// Per-chat idles use endRunForChat().
 export const endRun = () => {
-	if (Object.keys(get(runs)).length === 0) return;
 	writeRuns({});
 };
 
@@ -226,15 +246,34 @@ export const noteStreamUpdate = (
 		// null chatId means the caller has no chat context — never guess across
 		// chats. '' (a chat that has no id yet) may only claim anonymous runs.
 		if (!messageId || chatId === null || chatId === undefined) return null;
-		const unbound = Object.keys(registry).filter((key) => {
+		const candidates = Object.keys(registry).filter((key) => {
 			const run = registry[key];
 			const runChatId = run?.chatId ?? '';
 			return !!run && run.firstDeltaAt === null && (runChatId === '' || runChatId === chatId);
 		});
-		if (unbound.length !== 1) return null;
+		// Anonymous runs past their plausible lifetime are leftovers, not ours:
+		// expire them instead of adopting (stale anonymous runs were otherwise
+		// adoptable days later by unrelated streams — spec #R11).
+		const now = Date.now();
+		const expired = candidates.filter(
+			(key) =>
+				(registry[key]?.chatId ?? '') === '' &&
+				now - (registry[key]?.startedAt ?? 0) > ANON_RUN_MAX_AGE_MS
+		);
+		const unbound = candidates.filter((key) => !expired.includes(key));
+		if (expired.length === 0) {
+			if (unbound.length !== 1) return null;
+			const next = { ...registry };
+			next[messageId] = applyStream(next[unbound[0]], messageId, content, usage, chatId);
+			delete next[unbound[0]];
+			return next;
+		}
 		const next = { ...registry };
-		next[messageId] = applyStream(next[unbound[0]], messageId, content, usage, chatId);
-		delete next[unbound[0]];
+		for (const key of expired) delete next[key];
+		if (unbound.length === 1) {
+			next[messageId] = applyStream(next[unbound[0]], messageId, content, usage, chatId);
+			delete next[unbound[0]];
+		}
 		return next;
 	});
 };
@@ -284,16 +323,26 @@ export const noteOutputEvent = (messageId: string, data: any) => {
 	}
 };
 
-// Resolve + claim the engine activity row for the newest active run. The claim
-// lives on that run's registry entry, so other chats keep theirs.
+// Resolve + claim the engine activity row for the newest run IN THE CURRENT
+// CHAT (runStats mirror is scoped by currentChatId). Claims require ownership
+// evidence (spec #R11): the run's own stream has produced its first token, and
+// the row started no earlier than the run — foreign rows (background title/
+// follow-up tasks, other chats' streams) are never claimed. The claim lives on
+// that run's registry entry, so other chats keep theirs.
 export const syncEngineClaim = (activity: EngineActivity | null): EngineModelActivity | null => {
 	const run = get(runStats);
 	if (!run || !activity?.supported) return null;
 	const model = resolveEngineModel(activity, run.modelId);
 	if (!model) return null;
-	const claimed = claimRequestId(model, run.claimedRequestId);
+	if (run.firstDeltaAt === null || run.firstDeltaAt === undefined) return null;
+	const claimable = withClaimableRows(model, run, { modelId: run.modelId, chatId: run.chatId });
+	const claimed = claimOwnRequestId(model, run, run.claimedRequestId, {
+		modelId: run.modelId,
+		chatId: run.chatId
+	});
 	if (claimed !== run.claimedRequestId) {
 		patchRun(run.messageId, { claimedRequestId: claimed });
 	}
-	return model;
+	// Keep the returned model row honest about what this run may look at.
+	return claimable;
 };
