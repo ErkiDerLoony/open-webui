@@ -1,4 +1,4 @@
-# STATE — ring-liveness epic (2026-10-26) — OPEN (WP-1 dispatched)
+# STATE — ring-liveness epic (2026-10-26) — OPEN (WP-1L accepted; WP-4L next)
 
 ## Symptom (operator screenshot, chat "MLX Model Comparison", Llama-3.3-70B via omlx)
 
@@ -8,42 +8,50 @@ Ring under-reports ~80x during agentic runs.
 
 ## Root causes (@plan evidence, ses_e86a8bf04)
 
-- RC1 PRIMARY: `Chat.svelte:324` `$: contextUsage = getContextUsage() ?? …` — statement references
-  only `contextCompactionEnabled`/`serverContextUsage`; `history` read happens inside the function
-  body so Svelte static dep detection never registers it → ring frozen at load-time estimate.
-  Tooltip cache row (`MessageInput.svelte:548`) refs `history` directly → live. The asymmetry IS
-  the signature. Reload self-heals (init re-runs 324).
-- RC2: frozen snapshot is a length/4 estimate blind to tool-loop transcript (statusHistory chips
-  uncounted; output items land only at persist time).
-- RC3: compaction summary markers never reach the live frontend (events carry no summary text;
-  frontend never writes contextSummary); backend `open_webui:context_compaction` output-item
-  markers unknown to findSummaryCheckpoint; cache row scans FULL branch while numerator is sliced.
-- RC4 parity: backend accepts completion-only blobs as checkpoints (context_compaction.py:293-297,
-  no prompt-side gate = #R2 violation) and `_build_context_usage` hardcodes source:'estimated'.
+- RC1 PRIMARY (FIXED in WP-1L): `Chat.svelte` `$: contextUsage` statement referenced neither
+  `history` nor `params` in its own expression — Svelte static dep detection never re-ran it on
+  branch mutation → ring frozen at load-time estimate while tooltip cache row (refs `history`
+  directly) stayed live. The asymmetry WAS the signature.
+- RC2: load-time estimate blind to tool-loop transcript (statusHistory chips uncounted; output
+  items land late). Mitigated by WP-1L live measured flip.
+- RC3: compaction summary markers never reach the live frontend; backend
+  `open_webui:context_compaction` output-item markers unknown to findSummaryCheckpoint; cache
+  row scanned FULL branch while numerator sliced. → WP-3L.
+- RC4 parity: backend accepts completion-only blobs as checkpoints
+  (context_compaction.py:293-297, no prompt-side gate = #R2 violation) and
+  `_build_context_usage` hardcodes source:'estimated'. → WP-4L.
 - RC5 NOT-a-bug: 65,536 = operator compact_token_threshold; #R4 held.
+- RC6 (director, post-WP-1L): precedence `(local) ?? server` lets a local ESTIMATE mask the
+  server's authoritative post-compaction context_usage. Fix = prefer server-measured over
+  local-estimated; requires WP-4L honest labels FIRST → order WP-4L → WP-2L.
 
 ## Packages
 
-| id    | scope                                         | files                                          | spec      | gates           | status     |
-| ----- | --------------------------------------------- | ---------------------------------------------- | --------- | --------------- | ---------- |
-| WP-1L | live recompute + measured flip w/o reload     | Chat.svelte; contextUsage.test.ts (CR-22)      | #R21 #R22 | reviewer+tester | DISPATCHED |
-| WP-2L | compaction-done refreshes ring ≤2s            | Chat.svelte handleContextCompactionStatus      | #R23      | reviewer+tester | queued     |
-| WP-3L | marker parity + cache-row respects slice      | contextUsage.ts, MessageInput.svelte           | #R24      | reviewer+tester | queued     |
-| WP-4L | backend checkpoint gate + honest source label | backend/open_webui/utils/context_compaction.py | #R25      | reviewer + ruff | queued     |
+| id    | scope                                                                            | files                                                       | spec        | gates                                                                                                                 | status                      |
+| ----- | -------------------------------------------------------------------------------- | ----------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| WP-1L | live recompute + measured flip w/o reload                                        | Chat.svelte; contextUsage.test.ts                           | #R21 #R22   | reviewer ACCEPT + tester PASS (72/0 vitest, svelte-check baseline-identical 5952/188, prettier clean, manifest exact) | ACCEPTED b3498d155          |
+| WP-4L | backend checkpoint gate + honest source label                                    | backend/open_webui/utils/context_compaction.py              | #R25        | reviewer + ruff                                                                                                       | DISPATCHED                  |
+| WP-2L | compaction-done refreshes ring ≤2s + prefer server-measured over local-estimated | Chat.svelte handleContextCompactionStatus + precedence rule | #R23 (+RC6) | reviewer+tester                                                                                                       | queued (needs WP-4L labels) |
+| WP-3L | frontend marker parity + cache-row respects slice                                | contextUsage.ts, MessageInput.svelte                        | #R24        | reviewer+tester                                                                                                       | queued last                 |
 
-Acceptance rule: commit manifest == gate manifest (LESSONS P1 mitigation from WP-PHASE).
-No new UI strings anywhere → no i18n:parse needed.
+## Findings carried (WP-1L review)
 
-## Gate verbs (precedent WP-PHASE)
+- P2-1: usage memo keys on stringified LENGTH — same-length different-value usage blob while
+  nothing else moves skips recompute. Theoretical (usage finalize co-moves with content). Watch.
+- P3-1: params/$models/systemText changes take effect at next branch mutation (pre-existing).
+- P3-2: run-end always co-emits history reassign with finalized usage — safe by construction.
 
-tester: `npx vitest run src/lib/utils/contextUsage.test.ts src/lib/utils/streamTiming.test.ts`,
-`npm run check`, `npx prettier --check <touched files>`. Baseline failures recorded pre-change;
-only NEW failures block.
+## Gate verbs (precedent-verified)
+
+tester: `npx vitest run <paths>`, `npm run check`, `npx prettier --check <files>`; backend:
+`ruff format --check` / `ruff check --select=F` on touched file (F-baseline 25 pre-existing,
+fork-wide). Baseline failures recorded pre-change; only NEW failures block.
+Acceptance rule: commit manifest == gate manifest (WP-PHASE P1 mitigation).
 
 ## Operator live-check after image
 
 Agentic omlx run: ring climbs toward threshold % as loop grows; Source flips to measured when
-usage lands; after compaction toast ring drops to summary+tail ~1-2s; cache row can no longer
+usage lands; after compaction ring drops to summary+tail ≤2s; cache row can no longer
 contradict numerator. On "MLX Model Comparison" expect 3% → ~100% during such runs — that is
 the fix working, not a regression.
 

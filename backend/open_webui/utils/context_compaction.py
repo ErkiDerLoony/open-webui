@@ -249,6 +249,14 @@ def _present_number(usage: dict, keys: tuple[str, ...]) -> int | None:
     return None
 
 
+def _has_prompt_side_usage(usage: dict) -> bool:
+    # R2/#R25 (.opencode/specs/context-ring-usage.md): mirrors frontend
+    # hasPromptSideUsage — a completion-only blob (e.g. {completion_tokens: 650})
+    # says nothing about prior history and is not a checkpoint. Prompt-side field
+    # presence is numeric with explicit 0 counting as present (#R10).
+    return _present_number(usage, ('prompt_tokens', 'prompt_eval_count', 'input_tokens', 'prompt_n')) is not None
+
+
 def _usage_token_count(usage: dict) -> int:
     # R10 (.opencode/specs/context-ring-usage.md): presence-based alias resolution —
     # an explicit numeric 0 is present and wins over later aliases; absent/null falls
@@ -292,15 +300,15 @@ async def get_chat_context_usage(chat: Any, model_id: str | None = None) -> dict
 
     for idx in range(len(messages) - 1, -1, -1):
         usage = messages[idx].get('usage') or (messages[idx].get('info') or {}).get('usage')
-        if isinstance(usage, dict) and (tokens := _usage_token_count(usage)):
+        if isinstance(usage, dict) and _has_prompt_side_usage(usage) and (tokens := _usage_token_count(usage)):
             tokens += _estimate_messages_tokens(messages[idx + 1 :])
-            return _build_context_usage(tokens, threshold)
+            return _build_context_usage(tokens, threshold, source='measured')
 
     tokens = _estimate_tokens(previous_summary or '') + _estimate_messages_tokens(messages)
     return _build_context_usage(tokens, threshold)
 
 
-def _build_context_usage(tokens: int, threshold: int) -> dict:
+def _build_context_usage(tokens: int, threshold: int, source: str = 'estimated') -> dict:
     percent = round((tokens / threshold) * 100) if threshold > 0 else 0
     # spec #R17: server-provided percent is always within [0, 100]
     percent = min(100, max(0, percent))
@@ -309,7 +317,8 @@ def _build_context_usage(tokens: int, threshold: int) -> dict:
         'estimated_tokens': tokens,
         'threshold': threshold,
         'percent': percent,
-        'source': 'estimated',
+        # spec #R25: label provider-usage checkpoints 'measured'; length fallback stays 'estimated'
+        'source': source,
     }
 
 
@@ -365,7 +374,7 @@ def _exceeds_token_threshold(messages: list[dict], system_prompt: str, summary: 
 
     for idx in range(len(messages) - 1, -1, -1):
         usage = messages[idx].get('usage') or (messages[idx].get('info') or {}).get('usage')
-        if isinstance(usage, dict) and (tokens := _usage_token_count(usage)):
+        if isinstance(usage, dict) and _has_prompt_side_usage(usage) and (tokens := _usage_token_count(usage)):
             return tokens + _estimate_messages_tokens(messages[idx + 1 :]) > threshold
 
     estimated = _estimate_tokens(system_prompt) + _estimate_tokens(summary or '') + _estimate_messages_tokens(messages)
