@@ -1,4 +1,4 @@
-# STATE — ring-liveness epic (2026-10-26) — CODE COMPLETE (image build pending)
+# STATE — ring-liveness epic (2026-10-26) — PUBLISHED, awaiting operator live verification
 
 ## Symptom (operator screenshot, chat "MLX Model Comparison", Llama-3.3-70B via omlx)
 
@@ -51,11 +51,17 @@ svelte-check 5952/188/321 (exit 1 pre-existing). Commit manifest == gate manifes
 
 ## Next
 
-WP-IMG6: build amd64 image @ this branch head, retag floating 0.12.1-stats, push both tags by IP
-(AGENTS.md procedure). Then operator live-check.
+WP-IMG6 DONE: image `open-webui:0.12.1-stats-amd64` ID `2d6a3524` built @ `3b1aab2eb`
+(linux/amd64, mitmca context), floating `0.12.1-stats` retagged onto it, both tags pushed by IP
+to `10.10.10.10:5000` (registry digest `sha256:251d01e9b7f6…` identical both tags). Bundle
+markers verified in-image: `open_webui:context_compaction` literal in `chunks/vjoEYB6-.js`,
+`serverContextUsageFresh` in `vjoEYB6-.js.map`. Only remaining step: operator live check below.
 
 ## Operator live-check after image
 
+Deploy: `docker pull atuin.local:5000/open-webui:0.12.1-stats-amd64` (or the floating
+`0.12.1-stats` — same digest `sha256:251d01e9b7f6…`) and restart the container on the
+consumer host.
 Agentic omlx run: ring climbs toward threshold % as loop grows; Source flips measured when
 usage lands; after compaction toast ring drops to summary+tail <=2s (server value) and resumes
 live local at next mutation; cache row can no longer contradict numerator. On "MLX Model
