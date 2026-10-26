@@ -247,6 +247,10 @@
 		selectedModelIds = selectedModels;
 	}
 	let serverContextUsage = null;
+	// #R26: true while a fresh server context_usage report has the newest word
+	// on the ring; retired by local branch-signature changes (getContextUsage)
+	// and by every chat switch/reset boundary (#R16).
+	let serverContextUsageFresh = false;
 	let contextUsage = null;
 
 	const normalizeSelectedModels = (modelIds: string[] = []) => {
@@ -353,6 +357,11 @@
 			return ctxUsageCache.usage;
 		}
 
+		// #R26: the branch signature moved — the local recompute (or the
+		// throttled rescan replacing it) has the newest word again, so the
+		// server's previous report loses precedence over the ring.
+		serverContextUsageFresh = false;
+
 		// Streaming throttle: content-growth-only changes rescan at most once
 		// per second. Bypasses — no cached value, usage-part change (#R22
 		// measured flip), run ended (taskIds empty), or deps moved.
@@ -382,10 +391,21 @@
 	// #R21/RC1: reference `history` in the statement's own expression so Svelte
 	// static dependency detection re-runs the ring during branch mutation — reads
 	// confined to the function body never registered the dependency, freezing the
-	// ring at its load-time estimate.
+	// ring at its load-time estimate. The local value is computed on EVERY
+	// mutation so the #R26 signature-change retirement inside getContextUsage
+	// fires intra-run instead of being short-circuited away while the server
+	// holds precedence (the memo keeps cached re-runs a no-op).
+	$: localContextUsage = history?.currentId ? getContextUsage() : null;
+
+	// #R26/RC6: a fresh server context_usage report (compaction-done refresh,
+	// post-completion result) outranks the local estimate/checkpoint until a
+	// branch-signature change or chat switch/reset retires it; the flip re-runs
+	// this statement immediately (serverContextUsageFresh is a dependency) and
+	// the ring resumes live local values.
 	$: contextUsage =
-		(history?.currentId ? getContextUsage() : null) ??
-		(contextCompactionEnabled ? serverContextUsage : null);
+		history?.currentId && serverContextUsageFresh && serverContextUsage
+			? serverContextUsage
+			: (localContextUsage ?? (contextCompactionEnabled ? serverContextUsage : null));
 
 	// local branch: stats — keep the in-flight message ring in sync
 	$: if (taskIds?.length) {
@@ -968,6 +988,7 @@
 		// reads departed entries. Guard: same target id keeps its live figures.
 		if ((chatIdProp ?? '') !== ($chatId ?? '')) {
 			serverContextUsage = null;
+			serverContextUsageFresh = false;
 			taskIds = null;
 			engineActivity = null;
 		}
@@ -1050,6 +1071,7 @@
 		taskIds = null;
 		chatTasks = [];
 		serverContextUsage = null;
+		serverContextUsageFresh = false;
 		engineActivity = null;
 		history = {
 			messages: {},
@@ -1386,6 +1408,25 @@
 					});
 				}
 				contextCompactionToastId = null;
+			}
+			if (!status?.error) {
+				// #R23: pull the authoritative post-compaction context_usage so the
+				// composer ring refreshes within 2 s without a chat reload. Fire and
+				// forget — the toast never waits on the round-trip (CR-23: the error
+				// path above stays toast-only).
+				if (!$temporaryChatEnabled && $chatId) {
+					const refreshChatId = $chatId;
+					(async () => {
+						const freshChat = await getChatById(localStorage.token, refreshChatId);
+						// #R16: only install the report if the current chat is still
+						// the one the round-trip was issued for — a chat switch while
+						// in flight must not leak the departed chat's figures.
+						if ($chatId === refreshChatId && freshChat?.context_usage) {
+							serverContextUsage = freshChat.context_usage;
+							serverContextUsageFresh = true;
+						}
+					})().catch(() => {});
+				}
 			}
 			return;
 		}
@@ -3010,6 +3051,10 @@
 				// Load tasks from chat-level DB field
 				chatTasks = chat?.tasks ?? [];
 				serverContextUsage = chat?.context_usage ?? null;
+				// #R16/#R26: loadChat is a chat-switch boundary — a usage blob
+				// arriving here is load-time context, not a fresh report, so the
+				// departed chat's precedence never crosses over.
+				serverContextUsageFresh = false;
 
 				autoScroll = true;
 				await tick();
@@ -3742,10 +3787,23 @@
 
 		const model = atSelectedModel?.id ?? selectedModels.find((modelId) => modelId);
 		const toastId = toast.loading($i18n.t('Compacting context...'));
+		const compactChatId = $chatId;
 
 		try {
-			const result = await compactChatById(localStorage.token, $chatId, model);
-			serverContextUsage = result?.context_usage ?? serverContextUsage;
+			const result = await compactChatById(localStorage.token, compactChatId, model);
+			// #R16: a chat switch while the request is in flight must not install
+			// the departed chat's figures — only install for the still-current chat.
+			if ($chatId === compactChatId && result?.context_usage) {
+				// #R26: this is a fresh server report for the current chat — it
+				// takes ring precedence over the local value. The assignment is
+				// folded into the truthiness guard (declared deviation): the old
+				// `x = v ?? x` self-read added one implicit-any error site
+				// (svelte-check TS7005), and guard-first assignment is
+				// decision-equivalent since the server only ever emits
+				// context_usage as an object or null/absent.
+				serverContextUsage = result.context_usage;
+				serverContextUsageFresh = true;
+			}
 
 			if (result?.compacted) {
 				toast.success($i18n.t('Context compacted'), { id: toastId });
