@@ -135,15 +135,63 @@ export const estimateMessagesTokens = (messages: any[]): number =>
 
 // Newest compaction summary marker on the branch (#R1): messages before it are
 // represented by the summary text instead of being counted raw.
+//
+// The backend honors TWO marker shapes (backend/open_webui/utils/
+// context_compaction.py `_apply_latest_summary_checkpoint`) and the frontend
+// must recognize both (#R24):
+//  1. `contextSummary`/`context_summary` string fields on a message;
+//  2. `open_webui:context_compaction` items inside `message.output` carrying
+//     `call_id` and `summary` (persisted by the tool-loop compaction path).
+// Walk order mirrors the backend: newest message first; within one message the
+// string field is checked before the output items. First hit wins.
 export const findSummaryCheckpoint = (messages: any[]): { index: number; text: string } | null => {
-	let checkpoint: { index: number; text: string } | null = null;
-	for (let idx = 0; idx < (messages ?? []).length; idx += 1) {
-		const value = messages[idx]?.contextSummary ?? messages[idx]?.context_summary;
+	const list = messages ?? [];
+	for (let idx = list.length - 1; idx >= 0; idx -= 1) {
+		const message = list[idx];
+
+		const value = message?.contextSummary ?? message?.context_summary;
 		if (typeof value === 'string' && value.trim()) {
-			checkpoint = { index: idx, text: value };
+			return { index: idx, text: value };
+		}
+
+		// Defensive: output may be null/undefined/non-array on live messages.
+		const output = Array.isArray(message?.output) ? message.output : [];
+		for (let pos = output.length - 1; pos >= 0; pos -= 1) {
+			const item = output[pos];
+			if (
+				item?.type === 'open_webui:context_compaction' &&
+				typeof item.summary === 'string' &&
+				item.summary.trim()
+			) {
+				return { index: idx, text: item.summary };
+			}
 		}
 	}
-	return checkpoint;
+	return null;
+};
+
+// Newest usage blob reporting cached prompt tokens on the POST-SLICE branch
+// (#R24). Slice start resolves exactly like computeContextUsage does, so the
+// tooltip cache row can never cite a message the ring numerator excludes.
+// Shared implementation behind MessageInput's tooltip cache row (#R7).
+export const findRecentCacheUsage = (
+	messages: any[],
+	summaryCheckpoint?: { index: number; text: string } | null
+): any => {
+	const list = messages ?? [];
+	let startIdx = 0;
+	if (summaryCheckpoint && typeof summaryCheckpoint.text === 'string') {
+		startIdx = Math.max(0, Math.min(summaryCheckpoint.index, list.length - 1));
+	}
+
+	const activeMessages = list.slice(startIdx);
+	for (let idx = activeMessages.length - 1; idx >= 0; idx -= 1) {
+		const message = activeMessages[idx];
+		const usage = message?.usage ?? message?.info?.usage;
+		const cached = usage?.prompt_tokens_details?.cached_tokens ?? usage?.cached_tokens ?? null;
+		if (usage && Number.isFinite(Number(cached)) && Number(cached) > 0) return usage;
+	}
+	return null;
 };
 
 const clampPercent = (tokens: number, denominator: number): number =>

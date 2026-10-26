@@ -1,12 +1,14 @@
 // Conformance tests for the composer context ring contract
 // (.opencode/specs/context-ring-usage.md). Ids CR-01..CR-08 map to spec
 // #R1-#R8; CR-12 covers #R13 (per-turn sum beats cumulative provider totals);
-// CR-22 covers #R22 (measured flip without reload).
+// CR-22 covers #R22 (measured flip without reload); CR-24 covers #R24
+// (backend compaction-marker parity, cache row respects the summary slice).
 import { describe, it, expect } from 'vitest';
 import {
 	computeContextUsage,
 	estimateMessagesTokens,
 	estimateTokens,
+	findRecentCacheUsage,
 	findSummaryCheckpoint,
 	getUsageTokenCount,
 	hasPromptSideUsage
@@ -303,5 +305,201 @@ describe('measured flip when usage lands on the branch (CR-22, #R22)', () => {
 		expect(after!.source).toBe('measured');
 		// Checkpoint = 40000 + 500; only messages after the checkpoint add on.
 		expect(after!.tokens).toBe(40500 + estimateMessagesTokens([branch[2]]));
+	});
+});
+
+// CR-24 (#R24): the backend persists compaction markers as
+// `open_webui:context_compaction` items inside message.output arrays in
+// addition to contextSummary/context_summary string fields
+// (backend/open_webui/utils/context_compaction.py `_apply_latest_summary_checkpoint`).
+// The frontend must recognize both shapes, and the tooltip cache row must
+// resolve against the same post-slice branch the ring numerator scans.
+describe('backend compaction marker parity (CR-24, #R24)', () => {
+	it('CR-24: output-item open_webui:context_compaction marker yields a checkpoint; string fields keep priority', () => {
+		const messages: any[] = [
+			{ role: 'user', content: 'q' },
+			{
+				role: 'assistant',
+				content: 'a',
+				output: [
+					{ type: 'function_call', call_id: 'c1' },
+					{ type: 'open_webui:context_compaction', call_id: 'c1', summary: 'S' }
+				]
+			},
+			{ role: 'user', content: 'next' }
+		];
+		expect(findSummaryCheckpoint(messages)).toEqual({ index: 1, text: 'S' });
+
+		// A string-field marker on a LATER message wins over the output item.
+		messages[2] = { ...messages[2], contextSummary: 'S2' };
+		expect(findSummaryCheckpoint(messages)).toEqual({ index: 2, text: 'S2' });
+
+		// Within the SAME message the string field wins (backend per-message order).
+		const same = [
+			{
+				role: 'assistant',
+				contextSummary: 'PRIORITY',
+				output: [{ type: 'open_webui:context_compaction', call_id: 'c1', summary: 'S' }]
+			}
+		];
+		expect(findSummaryCheckpoint(same)).toEqual({ index: 0, text: 'PRIORITY' });
+
+		// Empty / non-string summaries on a marker are ignored.
+		expect(
+			findSummaryCheckpoint([
+				{
+					role: 'assistant',
+					output: [{ type: 'open_webui:context_compaction', call_id: 'c1', summary: '' }]
+				}
+			])
+		).toBeNull();
+		expect(
+			findSummaryCheckpoint([
+				{ role: 'assistant', output: [{ type: 'open_webui:context_compaction', summary: 42 }] }
+			])
+		).toBeNull();
+
+		// Defensive: null messages / non-array / junk output never throw.
+		expect(
+			findSummaryCheckpoint([
+				null,
+				{ role: 'assistant', output: null },
+				{ role: 'assistant', output: 'not-an-array' },
+				{ role: 'assistant', output: [null, 'junk', { type: 'open_webui:context_compaction' }] }
+			])
+		).toBeNull();
+	});
+
+	it('CR-24: computeContextUsage slices at the output-item marker; pre-marker usage checkpoints are out of range', () => {
+		const messages: any[] = [
+			{ role: 'user', content: para(9000) },
+			// Prompt-side usage checkpoint BEFORE the marker — it sits on a
+			// message the slice excludes, so it must never supply the numerator.
+			{
+				role: 'assistant',
+				content: 'old answer',
+				usage: { prompt_tokens: 40000, completion_tokens: 500 }
+			},
+			{
+				role: 'assistant',
+				content: 'compact',
+				output: [
+					{ type: 'function_call', call_id: 'c1' },
+					{ type: 'open_webui:context_compaction', call_id: 'c1', summary: para(4000) }
+				]
+			},
+			{ role: 'user', content: para(500) }
+		];
+
+		const checkpoint = findSummaryCheckpoint(messages);
+		expect(checkpoint).toEqual({ index: 2, text: para(4000) });
+
+		const usage = computeContextUsage({
+			messages,
+			systemText: '',
+			summaryCheckpoint: checkpoint,
+			threshold: null,
+			contextWindow: null
+		});
+		expect(usage).not.toBeNull();
+		// Pre-marker messages are out; the summary text plus the post-marker
+		// tail remain — the pre-marker usage blob is invisible to the slice.
+		expect(usage!.tokens).toBe(
+			estimateTokens(para(4000)) + estimateMessagesTokens(messages.slice(2))
+		);
+		expect(usage!.source).toBe('estimated');
+		expect(usage!.tokens).toBeLessThan(estimateMessagesTokens(messages));
+		expect(usage!.tokens).toBeGreaterThan(estimateMessagesTokens([messages[3]]));
+
+		// A POST-marker checkpoint is still honored (measured, tail-only).
+		const withPostUsage = [...messages];
+		withPostUsage[3] = {
+			...withPostUsage[3],
+			usage: { prompt_tokens: 2000, completion_tokens: 100 }
+		};
+		const measured = computeContextUsage({
+			messages: withPostUsage,
+			systemText: '',
+			summaryCheckpoint: checkpoint,
+			threshold: null,
+			contextWindow: null
+		});
+		expect(measured).not.toBeNull();
+		expect(measured!.source).toBe('measured');
+		expect(measured!.tokens).toBe(2100);
+	});
+
+	it('CR-24: cache-row lookup honors the summary slice; no checkpoint keeps full-branch behavior', () => {
+		const cachedBlob = {
+			prompt_tokens: 5000,
+			completion_tokens: 10,
+			prompt_tokens_details: { cached_tokens: 4000 }
+		};
+		const messages = [
+			{ role: 'assistant', content: 'old', usage: cachedBlob },
+			{ role: 'system', content: 'summary', contextSummary: 'S' },
+			{ role: 'user', content: 'tail' }
+		];
+		const checkpoint = findSummaryCheckpoint(messages);
+		expect(checkpoint).toEqual({ index: 1, text: 'S' });
+
+		// Blob sits BEFORE the slice start → invisible to the cache row, so it
+		// can never contradict the numerator (spec #R24).
+		expect(findRecentCacheUsage(messages, checkpoint)).toBeNull();
+
+		// The same blob AFTER the slice start → found.
+		const afterStart = [
+			messages[1],
+			{ role: 'assistant', content: 'fresh', usage: cachedBlob },
+			messages[2]
+		];
+		expect(findRecentCacheUsage(afterStart, findSummaryCheckpoint(afterStart))).toBe(cachedBlob);
+
+		// cached_tokens === 0 is not a cache hit; top-level alias and
+		// info.usage fallback resolve like the numerator's usage lookup.
+		expect(
+			findRecentCacheUsage(
+				[
+					{
+						role: 'assistant',
+						usage: { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 0 } }
+					}
+				],
+				null
+			)
+		).toBeNull();
+		const aliasBlob = { prompt_tokens: 10, cached_tokens: 7 };
+		expect(findRecentCacheUsage([{ role: 'assistant', usage: aliasBlob }])).toBe(aliasBlob);
+		const infoBlob = { prompt_tokens: 10, prompt_tokens_details: { cached_tokens: 3 } };
+		expect(findRecentCacheUsage([{ role: 'assistant', info: { usage: infoBlob } }], null)).toBe(
+			infoBlob
+		);
+
+		// No checkpoint → full-branch scan preserved (pre-fix MessageInput behavior).
+		expect(findRecentCacheUsage(messages, null)).toBe(cachedBlob);
+		expect(findRecentCacheUsage(messages)).toBe(cachedBlob);
+
+		// Defensive: malformed entries never throw.
+		expect(findRecentCacheUsage([null, { usage: null }, { info: {} }], checkpoint)).toBeNull();
+	});
+
+	it('CR-08 regression: string contextSummary slicing behaves exactly as before', () => {
+		const messages = [
+			{ role: 'system', content: 'older summary', contextSummary: 'OLD' },
+			{ role: 'user', content: 'q' },
+			{ role: 'system', content: 'newest summary', contextSummary: 'NEW' }
+		];
+		// Newest string marker still wins and keeps its index/text.
+		expect(findSummaryCheckpoint(messages)).toEqual({ index: 2, text: 'NEW' });
+
+		const usage = computeContextUsage({
+			messages,
+			systemText: '',
+			summaryCheckpoint: findSummaryCheckpoint(messages),
+			threshold: null,
+			contextWindow: null
+		});
+		expect(usage).not.toBeNull();
+		expect(usage!.tokens).toBe(estimateTokens('NEW') + estimateMessagesTokens(messages.slice(2)));
 	});
 });

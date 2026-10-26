@@ -64,7 +64,11 @@
 	// local branch: stats — rich tooltip for the composer context ring
 	import { formatContextTooltipHtml, getCacheHitPercent } from '$lib/utils/streamTiming';
 	// local branch: stats — shared context-ring usage computation
-	import { computeContextUsage, findSummaryCheckpoint } from '$lib/utils/contextUsage';
+	import {
+		computeContextUsage,
+		findRecentCacheUsage,
+		findSummaryCheckpoint
+	} from '$lib/utils/contextUsage';
 	import { uploadFile } from '$lib/apis/files';
 	import { getCwd, uploadNewFileToTerminal } from '$lib/apis/terminal';
 	import { generateAutoCompletion } from '$lib/apis';
@@ -534,18 +538,17 @@
 		: $i18n.t('unknown');
 	$: contextBarPercent = contextPercent;
 
-	const getLastCacheUsage = (): any => {
-		if (!history?.currentId) return null;
-		const messages = createMessagesList(history, history.currentId);
-		for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
-			const usage = messages[idx]?.usage ?? messages[idx]?.info?.usage;
-			const cached = usage?.prompt_tokens_details?.cached_tokens ?? usage?.cached_tokens ?? null;
-			if (usage && Number(cached) > 0) return usage;
-		}
-		return null;
-	};
-
-	$: contextCacheUsage = history?.currentId ? getLastCacheUsage() : null;
+	// Cache row lookup is slice-aware (#R24): findRecentCacheUsage applies the
+	// same summary-checkpoint slice as the ring numerator, so a cache row can
+	// never cite a message the numerator excludes. References `history` and
+	// `history.currentId` directly so dependency detection stays live (#R21).
+	$: contextCacheMessages = history?.currentId
+		? createMessagesList(history, history.currentId)
+		: [];
+	$: contextCacheUsage = findRecentCacheUsage(
+		contextCacheMessages,
+		findSummaryCheckpoint(contextCacheMessages)
+	);
 	// Checkpoint-backed local results and server/engine usage report 'measured';
 	// pure client estimation reports 'estimated' (anything non-'estimated'
 	// renders with the measured label).
@@ -557,7 +560,8 @@
 
 	// local branch: stats — rich tooltip for the context ring. It shows the
 	// ring's own numerator/denominator pair (spec #R6); cache rows come from
-	// the most recent message that reported cached prompt tokens.
+	// the most recent message on the post-summary slice that reported cached
+	// prompt tokens (#R24).
 	$: contextTooltipHtml = formatContextTooltipHtml(statusContextUsage, {
 		tokens: contextTokensRaw,
 		threshold: contextDenominator,

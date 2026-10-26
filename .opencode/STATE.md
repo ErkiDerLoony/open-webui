@@ -1,4 +1,4 @@
-# STATE — ring-liveness epic (2026-10-26) — OPEN (WP-1L+WP-4L accepted; WP-2L dispatched)
+# STATE — ring-liveness epic (2026-10-26) — OPEN (WP-1L/2L/4L accepted; WP-3L dispatched)
 
 ## Symptom (operator screenshot, chat "MLX Model Comparison", Llama-3.3-70B via omlx)
 
@@ -24,12 +24,12 @@ Ring under-reports ~80x during agentic runs.
 
 ## Packages
 
-| id    | scope                                                     | files                                                                                                                             | spec      | gates                                                                                                        | status             |
-| ----- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------ | ------------------ |
-| WP-1L | live recompute + measured flip w/o reload                 | Chat.svelte; contextUsage.test.ts                                                                                                 | #R21 #R22 | reviewer ACCEPT + tester PASS (72/0 vitest; svelte-check baseline-identical; prettier clean; manifest exact) | ACCEPTED b3498d155 |
-| WP-4L | backend prompt-side checkpoint gate + honest source label | backend/open_webui/utils/context_compaction.py                                                                                    | #R25      | reviewer ACCEPT-AMEND→ACCEPT (strict mirror ecf6eb2b4) + tester PASS (ruff clean, manifest exact)            | ACCEPTED ecf6eb2b4 |
-| WP-2L | compaction-done refresh ≤2s + server-fresh precedence     | Chat.svelte (handleContextCompactionStatus ~L1375, serverContextUsage sites L249/3012/3748, resets L970/1052, ring stmt L386-388) | #R23 #R26 | reviewer+tester                                                                                              | DISPATCHED         |
-| WP-3L | frontend marker parity + cache-row respects slice         | contextUsage.ts, MessageInput.svelte                                                                                              | #R24      | reviewer+tester                                                                                              | queued last        |
+| id    | scope                                                     | files                                          | spec      | gates                                                                                                        | status             |
+| ----- | --------------------------------------------------------- | ---------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------ | ------------------ |
+| WP-1L | live recompute + measured flip w/o reload                 | Chat.svelte; contextUsage.test.ts              | #R21 #R22 | reviewer ACCEPT + tester PASS (72/0 vitest; svelte-check baseline-identical; prettier clean; manifest exact) | ACCEPTED b3498d155 |
+| WP-4L | backend prompt-side checkpoint gate + honest source label | backend/open_webui/utils/context_compaction.py | #R25      | reviewer ACCEPT-AMEND→ACCEPT (strict mirror ecf6eb2b4) + tester PASS (ruff clean, manifest exact)            | ACCEPTED ecf6eb2b4 |
+| WP-2L | compaction-done refresh ≤2s + server-fresh precedence     | Chat.svelte                                    | #R23 #R26 | reviewer ACCEPT-AMEND(#R16 mid-flight leak)->ACCEPT ca97d46fd (findings none) + tester PASS x2               | ACCEPTED ca97d46fd |
+| WP-3L | frontend marker parity + cache-row respects slice         | contextUsage.ts, MessageInput.svelte           | #R24      | reviewer+tester                                                                                              | DISPATCHED         |
 
 ## Findings carried
 
