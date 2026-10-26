@@ -1,6 +1,7 @@
 // Conformance tests for the composer context ring contract
 // (.opencode/specs/context-ring-usage.md). Ids CR-01..CR-08 map to spec
-// #R1-#R8; CR-12 covers #R13 (per-turn sum beats cumulative provider totals).
+// #R1-#R8; CR-12 covers #R13 (per-turn sum beats cumulative provider totals);
+// CR-22 covers #R22 (measured flip without reload).
 import { describe, it, expect } from 'vitest';
 import {
 	computeContextUsage,
@@ -265,5 +266,42 @@ describe('per-turn sum beats cumulative totals (CR-12, #R13)', () => {
 				output_tokens: 50
 			})
 		).toBe(3050);
+	});
+});
+
+// CR-22 (#R22): when the run's provider usage lands on the live branch, a
+// fresh compute over the mutated branch flips the ring to a measured
+// checkpoint + tail — no chat reload required.
+describe('measured flip when usage lands on the branch (CR-22, #R22)', () => {
+	it('newest assistant gaining a prompt-side usage blob yields measured checkpoint + tail', () => {
+		const branch: any[] = [
+			{ role: 'user', content: para(9000) },
+			{ role: 'assistant', content: para(2000) },
+			{ role: 'user', content: para(50) }
+		];
+
+		// Before finalize: no prompt-side usage anywhere → honest estimate.
+		const before = computeContextUsage({
+			messages: [...branch],
+			systemText: '',
+			threshold: 65536,
+			contextWindow: null
+		});
+		expect(before).not.toBeNull();
+		expect(before!.source).toBe('estimated');
+
+		// Stream finalize attaches the run's usage to the newest assistant.
+		branch[1] = { ...branch[1], usage: { prompt_tokens: 40000, completion_tokens: 500 } };
+
+		const after = computeContextUsage({
+			messages: [...branch],
+			systemText: '',
+			threshold: 65536,
+			contextWindow: null
+		});
+		expect(after).not.toBeNull();
+		expect(after!.source).toBe('measured');
+		// Checkpoint = 40000 + 500; only messages after the checkpoint add on.
+		expect(after!.tokens).toBe(40500 + estimateMessagesTokens([branch[2]]));
 	});
 });

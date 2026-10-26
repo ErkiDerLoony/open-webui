@@ -300,6 +300,31 @@
 		return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 	};
 
+	// local branch: stats (#R21) — memoize the ring computation. The `$:` below
+	// references `history` directly, so it re-runs on every stream-chunk
+	// `history = history` reassignment; the cheap signature (branch shape +
+	// last-message usage presence + resolved denominator deps) keeps the full
+	// branch walk to at most one rescan per 1000 ms for content-growth-only
+	// changes while a run streams, and recomputes immediately otherwise.
+	let ctxUsageCache: {
+		signature: string;
+		usagePart: string;
+		depsPart: string;
+		at: number;
+		usage: ReturnType<typeof computeContextUsage>;
+	} | null = null;
+
+	// Presence-and-size code for one usage blob (the signature's usage part):
+	// absent (-1) is distinguishable from empty (2).
+	const usageBlobLength = (usage: unknown): number => {
+		if (usage === null || usage === undefined) return -1;
+		try {
+			return JSON.stringify(usage).length;
+		} catch {
+			return -2;
+		}
+	};
+
 	const getContextUsage = () => {
 		if (!history?.currentId) {
 			return null;
@@ -309,19 +334,58 @@
 		const threshold = contextCompactionEnabled
 			? (getContextThreshold() ?? serverContextUsage?.threshold ?? null)
 			: null;
+		const systemText = $settings?.system ?? '';
+		const summaryCheckpoint = findSummaryCheckpoint(messages);
+		const contextWindow = getContextWindow();
+
+		// Cheap invalidation signature: non-streaming deps (currentId, resolved
+		// threshold, context window, system text size), the branch's newest
+		// usage blobs (#R22 checkpoints land here), and content growth only.
+		const last = messages[messages.length - 1];
+		const depsPart = `${history.currentId}|${threshold}|${contextWindow}|${systemText.length}`;
+		const usagePart = `u${usageBlobLength(last?.usage)}|i${usageBlobLength(last?.info?.usage)}`;
+		const contentPart = `${messages.length}|${last?.content?.length ?? 0}|${last?.output?.length ?? 0}|${
+			last?.tool_calls?.length ?? -1
+		}|${summaryCheckpoint?.index ?? -1}`;
+		const signature = `${depsPart}#${usagePart}#${contentPart}`;
+
+		if (ctxUsageCache?.signature === signature) {
+			return ctxUsageCache.usage;
+		}
+
+		// Streaming throttle: content-growth-only changes rescan at most once
+		// per second. Bypasses — no cached value, usage-part change (#R22
+		// measured flip), run ended (taskIds empty), or deps moved.
+		if (
+			ctxUsageCache &&
+			taskIds?.length &&
+			usagePart === ctxUsageCache.usagePart &&
+			depsPart === ctxUsageCache.depsPart &&
+			Date.now() - ctxUsageCache.at < 1000
+		) {
+			return ctxUsageCache.usage;
+		}
 
 		// Shared computation (spec #R7): newest prompt-side usage checkpoint +
 		// tail estimate, denominator = compaction threshold ?? model window.
-		return computeContextUsage({
+		const usage = computeContextUsage({
 			messages,
-			systemText: $settings?.system ?? '',
-			summaryCheckpoint: findSummaryCheckpoint(messages),
+			systemText,
+			summaryCheckpoint,
 			threshold,
-			contextWindow: getContextWindow()
+			contextWindow
 		});
+		ctxUsageCache = { signature, usagePart, depsPart, at: Date.now(), usage };
+		return usage;
 	};
 
-	$: contextUsage = getContextUsage() ?? (contextCompactionEnabled ? serverContextUsage : null);
+	// #R21/RC1: reference `history` in the statement's own expression so Svelte
+	// static dependency detection re-runs the ring during branch mutation — reads
+	// confined to the function body never registered the dependency, freezing the
+	// ring at its load-time estimate.
+	$: contextUsage =
+		(history?.currentId ? getContextUsage() : null) ??
+		(contextCompactionEnabled ? serverContextUsage : null);
 
 	// local branch: stats — keep the in-flight message ring in sync
 	$: if (taskIds?.length) {
