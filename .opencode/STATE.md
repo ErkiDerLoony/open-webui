@@ -1,56 +1,56 @@
-# STATE — status-line stuck "waiting for model" bugfix (2026-10-27) — WP-STAT1 in flight
+# STATE — status-line "waiting for model" latch fix (2026-10-28) — DONE, image built local, NOT pushed
 
-## Goal
+## Goal (achieved)
 
-Operator bug: live run chip shows `5m 26s · waiting for model` while thoughts visibly stream
-(thoughts-only omlx run). Fix: waiting/loading latch must release on ANY own-text evidence.
+Operator bug fixed: run chip stuck on `5m 26s · waiting for model` while thoughts streamed.
+Shared predicate hasOwnOutputEvidence (content / reasoning-alias / output-item channels) now
+releases loading+waiting words in MessageRunStats chip, ChatStatsBar phase label, and bar-button
+loading segment; firstDeltaAt stamps from any evidence delta. Contract: specs/chat-status-line.md R1-R6.
 
-## Hard constraints
+## Packages (all ACCEPTED, branch local/chat-live-status)
 
-- Contract: .opencode/specs/chat-status-line.md #R1-#R6, tests CS-01..CS-05. Payloads cite #R ids.
-- Frontend-only, 5-file scope (#R6). One package (interlocked files). Single commit, branch local/chat-live-status.
-- Cite LESSONS.md#L8 (one command per shell call, no chaining, no exit-code echo), L5 (no edits while gate holds), L3 (fresh re-dispatch once on reload false-fail).
-- director never edits source. No self-waive gates (L4).
+| id | scope | acceptance | gates | status |
+| -- | ----- | ---------- | ----- | ------ |
+| WP-STAT1 | streamTiming.ts, stores/generationStats.ts (L9 path fix), ChatStats/MessageRunStats.svelte, ChatStats/ChatStatsBar.svelte, streamTiming.test.ts | specs/chat-status-line.md#R1-#R6 + CS-01..CS-05 | tester pass x2 + reviewer ACCEPT-AMEND (2 minors fixed+reverified) | committed 8e40a896c39396c940db535b70277470c5cf510b |
+| WP-STAT1-COMMIT | git bookkeeping | AGENTS.md reverted; manifest == 8 paths; tree clean except untracked specs/local-images.md | raw git output self-verified | accepted |
+| WP-STAT1-IMG | docker build only, NO PUSH (operator) | inspect: linux/amd64, both tags same ID; provenance = HEAD at build (ref-verified, LESSONS L10) | raw inspect/run output | accepted |
 
-## Root cause (@explore ses_e80933021, evidence-anchored)
+Image: open-webui:0.12.1-stats-amd64 == floating 0.12.1-stats == `sha256:e563ed0f468b...dafbefe`,
+built 2026-10-28T14:59+01 from 8e40a896c (amd64, mitmca context). Bundle marker:
+hasOwnOutputEvidence found in /app/build/_app/immutable/chunks/DNImwHZz.js.map (source-map only —
+minifier renames identifiers, expected). NO PUSH performed; 10.10.10.10:5000 untouched — consumer
+host still runs old image 2d6a3524 until operator pushes or runs locally.
 
-resolveDisplayPhase returns 'waiting' iff all four falsy: claimablePhase null, firstDeltaAt null,
-hasOwnDeltas false, loadingEvidence false (streamTiming.ts:400-407; MessageRunStats.svelte:268-271).
-Deadlock: firstDeltaAt stamped only in applyStream (generationStats.ts:247-248) from content or
-reasoning-alias text; hasOwnDeltas checks message.content length only (MessageRunStats.svelte:243)
-— thinking/output-item text invisible; isClaimable hard-false pre-firstDeltaAt (streamTiming.ts:274);
-message.status never set on socket path (statusHistory only, Chat.svelte:1660-1666).
-ChatStatsBar.phaseLabel (:105-112) shares the firstDeltaAt-only guard.
+## Operator next (your call)
 
-## Packages
-
-| id | scope | acceptance | depends_on | status |
-| -- | ----- | ---------- | ---------- | ------ |
-| WP-STAT1 | streamTiming.ts, src/lib/stores/generationStats.ts (path amended — see LESSONS L9), ChatStats/MessageRunStats.svelte, ChatStats/ChatStatsBar.svelte, streamTiming.test.ts | specs/chat-status-line.md#R1-#R6 + CS-01..CS-05; vitest green; prettier check clean; svelte-check baseline | — | accepted (uncommitted) |
-
-## Verdict log
-
-- @coder DONE 2026-10-27: 5 files, vitest streamTiming 67/0 (59 pre-existing + 8 CS). Ruled: #R6 path fix (L9); predicate carries firstDeltaAt 4th channel; ChatStatsBar optional `message` prop (component unmounted, degrades safely); output-item channel includes reasoning-item summary text (the bug shape).
-- @tester gate 1: VERDICT pass on all 4 commands (67/0 target, 88/0 full, prettier clean, svelte-check exactly 5952/188/321, zero errors naming package files). Set-check flagged PRE-EXISTING whitespace-only AGENTS.md diff (in STATE since ring epic, operator disposition) — not package-caused; not self-waived (L4), escalated to operator.
-- @reviewer: ACCEPT-AMEND 2 minors. M1 bar-button "loading model" segment ungated (same defect class); M2 comment overstatement re relay string-delta path.
-- @coder amend DONE 2026-10-28: M1 `$: evidence` hoisted, `{#if loading() && !evidence}` gate (:265 block; hover row untouched per reviewer scope); M2 comment-only. Diff matches mandated fix verbatim.
-- @tester final: VERDICT pass — 88/0, prettier clean, svelte-check exact baseline, no new files in set. ACCEPTED.
+- Live check WITHOUT push: `docker run --platform linux/amd64 open-webui:0.12.1-stats` locally;
+  expectations on thoughts-only omlx run: chip never sits on waiting/loading past first thought
+  token; ChatStatsBar (if mounted) same.
+- Push when satisfied (AGENTS.md procedure: tag both arch-suffixed + floating by IP to
+  10.10.10.10:5000), then consumer pulls atuin.local:5000/open-webui:0.12.1-stats-amd64.
+- Ring-epic live check still open (ring climb / measured flip / compaction drop on agentic run).
+  Before assuming this image carries the ring fixes, verify the four ring commits
+  (b3498d155 ecf6eb2b4 ca97d46fd 23036dfb3) are ancestors of 8e40a896c (`git merge-base --is-ancestor`).
 
 ## Gate verbs (precedent-verified)
 
 tester: `npx vitest run <paths>`, `npm run check`, `npx prettier --check <files>`, read-only git.
-Baselines: vitest 76/0 (will grow by CS cases); svelte-check 5952/188/321 (exit 1 pre-existing).
-Commit manifest == gate manifest.
+Baselines: vitest 88/0 (incl. 67 streamTiming); svelte-check 5952/188/321 (exit 1 pre-existing).
+One command per shell call, no chaining, no exit-code echo (L8). Provenance hashes: verify against
+.git/refs, never reply strings (L10).
 
-## Carried from ring-liveness epic (CLOSED, published)
+## Verdict log (condensed)
 
-Image open-webui:0.12.1-stats-amd64 ID 2d6a3524 pushed (both tags, digest sha256:251d01e9b7f6...).
-Ring-epic packages WP-1L..4L ACCEPTED (commits b3498d155 ecf6eb2b4 ca97d46fd 23036dfb3) — operator
-live check per prior procedure pending. Carried findings F1/F2/P2-1/P3-1 unchanged (see git history
-of this file). Prior epics CLOSED: phase-progression (WP-LIVE3 pending-operator), session-integrity,
-reload continuity. Spec canon: specs/context-ring-usage.md R1-R26; specs/local-images.md.
+- WP-STAT1: @coder DONE (67/0 target tests, 8 new CS cases) -> @tester pass -> @reviewer
+  ACCEPT-AMEND 2 minors (M1 bar-button loading segment ungated = same defect class; M2 comment)
+  -> @coder amend verbatim to mandated fixes -> @tester final pass (88/0, svelte-check baseline
+  exact, set clean). Committed 8e40a896c (manifest 8 paths).
+- WP-STAT1-IMG: single build attempt, first-try success; tags proven same ID; no push.
 
-## Housekeeping noise (not this epic)
+## Carried / prior (CLOSED)
 
-Uncommitted AGENTS.md trailing-newline diff; untracked specs/local-images.md, specs/chat-status-line.md,
-this STATE rewrite — operator disposition.
+Ring-liveness: WP-1L..4L ACCEPTED (b3498d155 ecf6eb2b4 ca97d46fd 23036dfb3), image 2d6a3524 pushed
+(digest sha256:251d01e9b7f6...); carried findings F1/F2/P2-1/P3-1 open, non-blocking. Prior epics:
+phase-progression (WP-LIVE3 pending-operator), session-integrity, reload continuity. Specs:
+context-ring-usage.md R1-R26, chat-status-line.md (new), local-images.md (untracked, operator
+disposition). LESSONS: L9 (payload path inference), L10 (reply hash transcription) new this epic.
