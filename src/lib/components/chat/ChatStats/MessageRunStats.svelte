@@ -20,6 +20,7 @@
 		getDisplayGenTokens,
 		getDisplayPromptTokens,
 		getDisplayView,
+		hasOwnOutputEvidence,
 		resolveDurationMs,
 		resolveDisplayPhase,
 		resolveEngineModel,
@@ -240,7 +241,10 @@
 			loadingEvidence: !!engineModel?.is_loading || view.phase === 'loading',
 			claimablePhase: boundPhase(),
 			firstDeltaAt: run?.firstDeltaAt ?? null,
-			hasOwnDeltas: (message?.content ?? '').length > 0 || !!run?.firstDeltaAt,
+			// #R3: one shared predicate over all three text channels (content,
+			// reasoning aliases, output items) plus the stamped first delta —
+			// on-screen thoughts are evidence even with empty content.
+			hasOwnDeltas: hasOwnOutputEvidence(message, run),
 			reasoningActive: run?.lastDeltaWasReasoning === true || run?.step?.icon === 'reasoning'
 		});
 

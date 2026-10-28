@@ -11,6 +11,7 @@ import {
 	claimOwnRequestId,
 	estimateTokensFromText,
 	getReasoningText,
+	hasOwnOutputEvidence,
 	resolveEngineModel,
 	withClaimableRows
 } from '$lib/utils/streamTiming';
@@ -244,7 +245,20 @@ export const applyStream = (
 	// delta may be a raw chunk (choices delta / relayed Responses event) or a
 	// plain reasoning string; explicit empty content must not mask reasoning.
 	const reasoning = typeof delta === 'string' ? delta : getReasoningText(delta);
-	const hasEvidence = (content?.length ?? 0) > 0 || reasoning.length > 0;
+	// #R2 (chat-status-line): text can also ride the chunk OUTSIDE the
+	// accumulated-content and alias fields — WS-bridge payloads and relayed
+	// structured-output chunks carry output items whose (reasoning-)message
+	// text is generated output too. Reading the chunk through the shared
+	// predicate (#R3) counts those channels without forking the alias list.
+	// Coverage: relayed chat-completion chunks are covered at the display
+	// layer only (component-level predicate) — Chat.svelte hands us a STRING
+	// (reasoningEvidence) as delta there, so the object output-item channel
+	// above never fires on that path; store-level stamping covers the
+	// delta-object and delta-string alias channels.
+	const hasEvidence =
+		(content?.length ?? 0) > 0 ||
+		reasoning.length > 0 ||
+		(typeof delta !== 'string' && hasOwnOutputEvidence(delta, null));
 	if (!next.firstDeltaAt && hasEvidence) next.firstDeltaAt = now;
 	next.estTokens = Math.max(
 		next.estTokens ?? 0,

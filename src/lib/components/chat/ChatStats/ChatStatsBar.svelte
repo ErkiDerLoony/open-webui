@@ -9,7 +9,8 @@
 		formatTokens,
 		getCacheHitPercent,
 		getClaimedRequestStats,
-		getContextBreakdown
+		getContextBreakdown,
+		hasOwnOutputEvidence
 	} from '$lib/utils/streamTiming';
 	import StepTimeline from './StepTimeline.svelte';
 	import ContextRing from './ContextRing.svelte';
@@ -17,6 +18,11 @@
 	export let active = false;
 	export let activity: any = null;
 	export let contextUsage: any = null;
+	// #R3 (chat-status-line): the live message for this run — its content /
+	// reasoning-alias / output-item text feeds the shared evidence predicate.
+	// Hosts that mount the bar without it fall back to the run's stamped
+	// firstDeltaAt, which #R2 keeps stamped on any output delta.
+	export let message: any = null;
 
 	const STORAGE_KEY = 'owui.showGenerationStats';
 
@@ -102,12 +108,20 @@
 
 	const decodeTps = () => genRow()?.tokens_per_second ?? clientTps();
 
+	// #R1/#R3 (chat-status-line): own streamed text — the shared predicate
+	// over the content / reasoning-alias / output-item channels, plus the
+	// first delta #R2 keeps stamped — outranks the loading and waiting
+	// words; a thoughts-only stream releases this label at its first token.
+	// Hoisted: the bar button's inline loading segment gates on the same
+	// value so "loading" cannot outlive the run's own output evidence.
+	$: evidence = hasOwnOutputEvidence(message, run);
+
 	const phaseLabel = () => {
-		if (loading()) return 'loading model';
+		if (loading() && !evidence) return 'loading model';
 		if (claimed?.phase === 'waiting') return `queued #${claimed.waiting?.queue_position ?? '?'}`;
 		if (claimed?.phase === 'prefilling') return 'prefilling';
 		if (claimed?.phase === 'generating') return 'generating';
-		if (run?.firstDeltaAt) return 'generating';
+		if (evidence) return 'generating';
 		return 'waiting for model';
 	};
 
@@ -248,7 +262,7 @@
 				<span class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
 				<span class="shrink-0 tabular-nums">{formatDuration(totalSec)}</span>
 
-				{#if loading()}
+				{#if loading() && !evidence}
 					<span class="shrink-0 text-amber-500">
 						loading {engineModel?.estimated_size_formatted ?? 'model'}
 						{#if engineModel?.loading_remaining_seconds_estimate}

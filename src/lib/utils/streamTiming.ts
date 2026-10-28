@@ -406,6 +406,46 @@ export const resolveDisplayPhase = (ctx: DisplayPhaseContext): string => {
 	return 'waiting';
 };
 
+// Text carried by Responses-style output items (the shape Chat.svelte keeps
+// on message.output): 'message' items expose their content-part text (exact
+// getOutputText shape from structuredOutput.ts), 'reasoning' items their
+// summary-part text (falling back to content parts, as the reasoning renderer
+// does). Other item kinds (function calls…) contribute nothing.
+const getOutputItemText = (items: any): string => {
+	if (!Array.isArray(items)) return '';
+	let text = '';
+	for (const item of items) {
+		let parts: any = null;
+		if (item?.type === 'message') {
+			parts = item?.content;
+		} else if (item?.type === 'reasoning') {
+			parts = Array.isArray(item?.summary) && item.summary.length ? item.summary : item?.content;
+		}
+		if (Array.isArray(parts)) {
+			text += parts.map((part: any) => (typeof part?.text === 'string' ? part.text : '')).join('');
+		}
+	}
+	return text;
+};
+
+// #R3 (chat-status-line): single source of truth for "this run has already
+// produced its own visible text", covering every channel the waiting/loading
+// latch must release on: the run's stamped first delta (#R2 stamps it from any
+// content/alias/output-item chunk), the message's content body, reasoning/
+// thinking text via the existing getReasoningText aliases (#R19 — never a
+// forked alias list), and output-item text on message.output. Callers pass
+// their live message; without one the predicate degrades to the run's stamped
+// evidence.
+export const hasOwnOutputEvidence = (
+	message: any,
+	run?: { firstDeltaAt?: number | null } | null
+): boolean => {
+	if (run && run.firstDeltaAt !== null && run.firstDeltaAt !== undefined) return true;
+	if (message?.content) return true;
+	if (getReasoningText(message).length > 0) return true;
+	return getOutputItemText(message?.output).trim().length > 0;
+};
+
 // Generated-token count for the chip: engine-reported only from a claimable
 // generating row (spec #R11). Null means "no own evidence yet" — callers fall
 // back to their client-side estimate or omit the segment; they never render

@@ -34,6 +34,7 @@ import {
 	getDisplayPromptTokens,
 	getDisplayView,
 	getReasoningText,
+	hasOwnOutputEvidence,
 	isClaimable,
 	resolveDisplayPhase,
 	resolveDurationMs,
@@ -45,6 +46,8 @@ import {
 	currentChatId,
 	endRun,
 	needsRunRehydration,
+	noteStatus,
+	noteStep,
 	noteStreamUpdate,
 	runStats,
 	runs,
@@ -799,5 +802,191 @@ describe('display phase hierarchy — resolveDisplayPhase (CR-18, #R20)', () => 
 				hasOwnDeltas: false
 			})
 		).toBe('waiting');
+	});
+});
+
+// WP-STAT1 (.opencode/specs/chat-status-line.md #R1-#R4): the waiting latch
+// must release once the run's own streamed text shows on ANY channel — the
+// content body, reasoning-alias deltas, or output items — not content alone.
+// CS-01/CS-02 pin the shared predicate plus phase resolution, CS-04 the
+// store-side first-delta stamping, and the cold-start rows guard #R4/CS-05.
+describe('status-line evidence (CS-01/CS-02/CS-04, #R1-#R4)', () => {
+	beforeEach(() => {
+		endRun();
+		currentChatId.set('');
+	});
+	afterEach(() => {
+		endRun();
+		currentChatId.set('');
+	});
+
+	const reasoningAliases = [
+		{ reasoning_content: 'pondering' },
+		{ reasoning: 'pondering' },
+		{ thinking: 'pondering' }
+	];
+	const messageItem = (text: string) => ({
+		type: 'message',
+		content: [{ type: 'output_text', text }]
+	});
+	const reasoningItem = (text: string) => ({
+		type: 'reasoning',
+		summary: [{ type: 'summary_text', text }]
+	});
+	const freshEntry = (): RunStats =>
+		({
+			messageId: 'm1',
+			chatId: 'c1',
+			modelId: 'model-a',
+			urlIdx: null,
+			startedAt: 10_000,
+			firstDeltaAt: null,
+			lastDeltaWasReasoning: false,
+			estTokens: 0,
+			usage: null,
+			step: null,
+			steps: [],
+			claimedRequestId: null,
+			context: null,
+			contextThreshold: null,
+			engineActivity: null
+		}) as RunStats;
+
+	// CS-01 (#R1/#R3): thoughts-only output — empty content, thinking text on
+	// each getReasoningText alias — is own-text evidence…
+	it('CS-01: hasOwnOutputEvidence true for each reasoning alias', () => {
+		for (const alias of reasoningAliases) {
+			expect(hasOwnOutputEvidence({ content: '', ...alias }, null)).toBe(true);
+		}
+		// …and the relayed Responses reasoning shape carries evidence too.
+		expect(
+			hasOwnOutputEvidence(
+				{ content: '', type: 'response.reasoning_text.delta', delta: 'hmm' },
+				null
+			)
+		).toBe(true);
+	});
+
+	it('CS-01: resolveDisplayPhase with reasoning evidence never returns waiting', () => {
+		for (const alias of reasoningAliases) {
+			const hasOwnDeltas = hasOwnOutputEvidence({ content: '', ...alias }, null);
+			expect(hasOwnDeltas).toBe(true);
+			// No loading evidence in play: the word is thinking, not waiting.
+			expect(
+				resolveDisplayPhase({
+					loadingEvidence: false,
+					claimablePhase: null,
+					firstDeltaAt: null,
+					hasOwnDeltas,
+					reasoningActive: true
+				})
+			).toBe('thinking');
+			// Even with the model still loading, own text outranks the loading word.
+			expect(
+				resolveDisplayPhase({
+					loadingEvidence: true,
+					claimablePhase: null,
+					firstDeltaAt: null,
+					hasOwnDeltas,
+					reasoningActive: true
+				})
+			).toBe('thinking');
+		}
+	});
+
+	// CS-02 (#R3): output-item text (the shape Chat.svelte keeps on
+	// message.output) counts with content still empty.
+	it('CS-02: hasOwnOutputEvidence true for output-item-text-only messages', () => {
+		expect(hasOwnOutputEvidence({ content: '', output: [messageItem('streamed')] }, null)).toBe(
+			true
+		);
+		// Reasoning items carry the on-screen thoughts in their summary parts.
+		expect(hasOwnOutputEvidence({ content: '', output: [reasoningItem('hmm')] }, null)).toBe(true);
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: false,
+				claimablePhase: null,
+				firstDeltaAt: null,
+				hasOwnDeltas: hasOwnOutputEvidence({ content: '', output: [messageItem('x')] }, null)
+			})
+		).toBe('generating');
+	});
+
+	it('predicate false without any own-text channel; stamped run counts as recorded evidence', () => {
+		expect(hasOwnOutputEvidence(null, null)).toBe(false);
+		expect(hasOwnOutputEvidence(undefined, undefined)).toBe(false);
+		expect(hasOwnOutputEvidence({ content: '' }, null)).toBe(false);
+		expect(hasOwnOutputEvidence({ output: [] }, null)).toBe(false);
+		// Function-call items carry no text of their own.
+		expect(
+			hasOwnOutputEvidence({ content: '', output: [{ type: 'function_call', name: 'x' }] }, null)
+		).toBe(false);
+		// Whitespace-only item text matches getOutputText's trim filter.
+		expect(hasOwnOutputEvidence({ content: '', output: [messageItem('   ')] }, null)).toBe(false);
+		// A stamped first delta is recorded output evidence (#R2).
+		expect(hasOwnOutputEvidence({ content: '' }, { firstDeltaAt: 12_000 })).toBe(true);
+	});
+
+	// CS-04 (#R2): stamping covers ANY delta carrying text — alias fields…
+	it('CS-04: applyStream stamps firstDeltaAt on reasoning-alias-only deltas', () => {
+		for (const alias of reasoningAliases) {
+			expect(
+				applyStream(freshEntry(), 'm1', '', undefined, 'c1', alias).firstDeltaAt
+			).not.toBeNull();
+		}
+	});
+
+	// …and the new channel: chunks carrying only output-item text (WS-bridge /
+	// relayed structured-output payloads).
+	it('CS-04: applyStream stamps on output-item-only chunks (#R2 new channel)', () => {
+		expect(
+			applyStream(freshEntry(), 'm1', '', undefined, 'c1', {
+				content: '',
+				output: [messageItem('streamed')]
+			}).firstDeltaAt
+		).not.toBeNull();
+		expect(
+			applyStream(freshEntry(), 'm1', '', undefined, 'c1', {
+				content: '',
+				output: [reasoningItem('hmm')]
+			}).firstDeltaAt
+		).not.toBeNull();
+		// Without any text the stamp stays off (no evidence to latch on).
+		expect(
+			applyStream(freshEntry(), 'm1', '', undefined, 'c1', {
+				content: '',
+				output: [{ type: 'function_call', name: 'x' }]
+			}).firstDeltaAt
+		).toBeNull();
+	});
+
+	it('status/step events never stamp firstDeltaAt (not output tokens)', () => {
+		beginRun('m1', 'model-a', null, 'c1');
+		noteStatus('m1', { description: 'searching the web', action: 'search' });
+		noteStep('m1', 'thinking', 'reasoning');
+		expect(get(runs)['m1']?.firstDeltaAt).toBeNull();
+	});
+
+	// CS-05 guard (#R4): with no evidence on any channel the cold-start words
+	// still render — the predicate must not short-circuit them.
+	it('cold start unchanged: no evidence anywhere still resolves to waiting', () => {
+		const message = { content: '', output: [] };
+		expect(hasOwnOutputEvidence(message, { firstDeltaAt: null })).toBe(false);
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: false,
+				claimablePhase: null,
+				firstDeltaAt: null,
+				hasOwnDeltas: false
+			})
+		).toBe('waiting');
+		expect(
+			resolveDisplayPhase({
+				loadingEvidence: true,
+				claimablePhase: null,
+				firstDeltaAt: null,
+				hasOwnDeltas: false
+			})
+		).toBe('loading');
 	});
 });
