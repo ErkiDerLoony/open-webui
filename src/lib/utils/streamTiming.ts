@@ -72,7 +72,7 @@ export type EngineActivity = {
 
 export const formatDuration = (seconds: number | null | undefined): string => {
 	if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '';
-	if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+	if (seconds < 60) return `${seconds < 10 ? Math.ceil(seconds) : Math.round(seconds)}s`;
 	if (seconds < 3600) {
 		const m = Math.floor(seconds / 60);
 		const s = Math.round(seconds % 60);

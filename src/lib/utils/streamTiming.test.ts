@@ -29,6 +29,7 @@ import {
 	claimOwnRequestId,
 	computeLiveTps,
 	formatContextTooltipHtml,
+	formatDuration,
 	formatUsageTooltipHtml,
 	getCacheHitPercent,
 	getDisplayGenTokens,
@@ -1149,5 +1150,23 @@ describe('own-row pre-token binding (LP-01..LP-06)', () => {
 		const view = getDisplayView(model, run(), null, ctx);
 		expect(view.phase).not.toBe('prefilling');
 		expect(computeLiveTps(view, run(), 0, 0)).toBe(0);
+	});
+});
+
+// WP-SECS1: no sub-second precision in any displayed time — chip/timeline
+// durations render whole seconds only, rounded up (Math.ceil, house style
+// of MessageRunStats' `~${Math.ceil(eta)}s`).
+describe('formatDuration whole-second precision', () => {
+	it('rounds sub-10s durations up to whole seconds (exact strings)', () => {
+		expect(formatDuration(0)).toBe('0s');
+		expect(formatDuration(0.2)).toBe('1s');
+		expect(formatDuration(3.74)).toBe('4s');
+		expect(formatDuration(9.99)).toBe('10s');
+	});
+
+	it('never emits a decimal point across all branches', () => {
+		for (const v of [0, 0.2, 3.74, 9.99, 10.4, 59.2, 61.6, 3601.4]) {
+			expect(formatDuration(v)).not.toContain('.');
+		}
 	});
 });

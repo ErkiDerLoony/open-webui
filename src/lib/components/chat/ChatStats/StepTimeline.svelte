@@ -21,7 +21,7 @@
 	{#each steps as step, idx}
 		<div class="flex items-baseline gap-2 text-gray-600 dark:text-gray-300">
 			<span class="w-12 shrink-0 text-right tabular-nums text-gray-400 dark:text-gray-500">
-				+{offset(step).toFixed(1)}s
+				+{Math.ceil(offset(step))}s
 			</span>
 			<span class="min-w-0 flex-1 truncate">{step.label}</span>
 			<span class="shrink-0 tabular-nums text-gray-400 dark:text-gray-500">
