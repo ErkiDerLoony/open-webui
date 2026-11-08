@@ -18,7 +18,9 @@ context-ring-usage.md#R11/#R12/CR-10 wording amended (operator-approved 2026-11-
 | WP-LOAD1-COMMIT | git bookkeeping only | manifest == 7 paths; tree clean except untracked specs/local-images.md; raw git output | self-verified raw output | accepted (41c7b9701) |
 | WP-LOAD1-IMG | docker build only | linux/amd64 inspect; both tags same ID; provenance HEAD vs .git/refs (L10) | raw inspect/run output | accepted (77b64e1868, fresh; attempt 2 REJECTED — stale-id hijack, LESSONS L12) |
 | WP-LOAD1-PUSH | docker tag+push by IP, both tags | pre-push ID match to 77b64e1868; identical registry digests both tags | raw push digests | accepted (registry digest sha256:eb8609b1b82a… both tags) |
-| WP-LOAD1-RB | commit runbook delta (.opencode/STATE.md + LESSONS.md L12) after push | manifest == 2 paths; raw git output | self-verified | dispatched |
+| WP-LOAD1-RB | commit runbook delta (.opencode/STATE.md + LESSONS.md L12) after push | manifest == 2 paths; raw git output | self-verified | accepted (d8576644a, ref-verified) |
+
+## Epic status: ALL PACKAGES ACCEPTED — operator eyeball pending (deploy + warm 2nd request)
 
 ## Ship decision (operator chose "1" = ship, 2026-11-08)
 
