@@ -38,8 +38,8 @@ Open WebUI — self-hosted AI platform. One repo, two apps: a SvelteKit frontend
 ## Local image builds & push
 
 - CURRENT OPERATING MODE (until further notice): builds are linux/amd64 ONLY. Do not build arm64.
-- Every build command MUST carry `--platform linux/amd64` AND the mandatory mitmca build-context for TLS: `--build-context mitmca=$HOME/mitmca-context`.
-- Build amd64 (example version 0.12.1): `docker build --platform linux/amd64 --build-context mitmca=$HOME/mitmca-context -t open-webui:0.12.1-stats-amd64 .`
+- Every build command MUST carry `--platform linux/amd64`. No build-context flags exist any more (the old mitmca CA context was removed 2026-11-08).
+- Build amd64 (example version 0.12.1): `docker build --platform linux/amd64 -t open-webui:0.12.1-stats-amd64 .`
 - Floating tag = amd64 (amd64-only cycle): retag `<ver>-stats` onto the amd64 build, overwriting any arm64 tag: `docker tag open-webui:0.12.1-stats-amd64 open-webui:0.12.1-stats`
 - Push workaround: Due to OrbStack DNS issues, tag+push by IP — both the arch-suffixed and floating tags: `docker tag open-webui:0.12.1-stats-amd64 10.10.10.10:5000/open-webui:0.12.1-stats-amd64 && docker push 10.10.10.10:5000/open-webui:0.12.1-stats-amd64`, then `docker tag open-webui:0.12.1-stats 10.10.10.10:5000/open-webui:0.12.1-stats && docker push 10.10.10.10:5000/open-webui:0.12.1-stats`.
 - Consumers pull amd64 tags: `docker pull atuin.local:5000/open-webui:0.12.1-stats-amd64`.
