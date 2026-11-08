@@ -34,6 +34,22 @@ src/lib/stores/generationStats.ts, src/lib/components/chat/ChatStats/MessageRunS
 src/lib/components/chat/ChatStats/ChatStatsBar.svelte, src/lib/utils/streamTiming.test.ts.
 (Amended 2026-10-27: generationStats.ts canonical location is src/lib/stores/, not utils/.)
 
+#R7 Pre-token own-row binding. WHEN the resolved engine model row carries exactly one busy row
+(prefilling/generating/waiting) whose start time is evidenced (startedAt, or elapsed derived
+against the current poll) and not earlier than the run start minus 250 ms, and model/chat match
+checks pass, THE SYSTEM SHALL bind that row to the run before run.firstDeltaAt is set and
+display its phase (queued/prefill) with progress on the run's status line. Rows lacking
+start-time evidence are never bound pre-token; with two or more concurrent busy rows nothing
+binds pre-token. Conformance: LP-01, LP-02, LP-03, LP-04, LP-06.
+
+#R8 Busy model outranks the loading word. WHEN the resolved engine model row carries at least
+one busy row, THE SYSTEM SHALL not display the "loading model" word on that run's status line.
+Conformance: LP-04 (hasBusyRows predicate), reviewer static check of MessageRunStats wiring.
+
+#R9 Prefill rate before first token. WHEN the bound row is a prefill row reporting speed and
+the display phase is prefill, THE SYSTEM SHALL show that prompt-side rate even while
+run.firstDeltaAt is unset; decode-side rates stay zero before the first token. Conformance: LP-05.
+
 ## Conformance tests (src/lib/utils/streamTiming.test.ts, new describe "status-line evidence")
 
 - CS-01: hasOwnOutputEvidence true for reasoning-only message (empty content, thinking text via

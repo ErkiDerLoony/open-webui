@@ -20,6 +20,7 @@
 		getDisplayGenTokens,
 		getDisplayPromptTokens,
 		getDisplayView,
+		hasBusyRows,
 		hasOwnOutputEvidence,
 		resolveDurationMs,
 		resolveDisplayPhase,
@@ -145,9 +146,10 @@
 				!!m &&
 				(m.prefilling?.length ?? 0) + (m.generating?.length ?? 0) + (m.waiting?.length ?? 0) > 0;
 			engineModel = hasRows(fresh) ? fresh : hasRows(mirrored) ? mirrored : (fresh ?? mirrored);
-			// Ownership evidence required before claiming (spec #R11): no claim
-			// attempts until THIS run's stream produced its first token, and only
-			// rows that started with the run are candidates.
+			// Claimable rows are filtered every poll (spec #R11 as amended by
+			// chat-status-line.md#R7) — pre-first-token only the model's single
+			// busy row with start-time evidence may bind; the request-id claim
+			// itself is still stamped only after THIS run's first token.
 			claimedId = claimOwnRequestId(engineModel, r, claimedId, {
 				modelId: r?.modelId ?? null,
 				chatId: r?.chatId ?? chatId
@@ -181,8 +183,9 @@
 	// Merged engine view for the chip (spec #R11): narrowed to rows THIS run
 	// may claim — id-matched claim first, positional pick inside the claimable
 	// rows when the engine omits request_ids. Before this run's own stream
-	// produced its first token nothing is claimable, so the view stays neutral:
-	// foreign rows' token counts and queued/prefill phase words never surface.
+	// produced its first token the view binds only the single busy row
+	// carrying start-time evidence (#R7); foreign rows' token counts and
+	// queued/prefill phase words never surface.
 	$: view = getDisplayView(engineModel, run, claimedId, {
 		modelId: run?.modelId ?? null,
 		chatId: run?.chatId ?? chatId
@@ -238,7 +241,8 @@
 		if (!live) return '';
 
 		const phase = resolveDisplayPhase({
-			loadingEvidence: !!engineModel?.is_loading || view.phase === 'loading',
+			loadingEvidence:
+				(!!engineModel?.is_loading || view.phase === 'loading') && !hasBusyRows(engineModel),
 			claimablePhase: boundPhase(),
 			firstDeltaAt: run?.firstDeltaAt ?? null,
 			// #R3: one shared predicate over all three text channels (content,

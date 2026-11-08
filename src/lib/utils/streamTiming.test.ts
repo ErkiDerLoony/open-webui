@@ -8,7 +8,8 @@
 // WP-RATE appends the own-run attribution conformance rows CR-09/CR-10
 // (.opencode/specs/context-ring-usage.md #R11/#R12): engine activity is
 // connection-global, so rows may only be claimed for a run whose own stream
-// produced its first token, and the chip shows zero tok/s before that.
+// produced its first token; decode-side tok/s stays zero pre-token,
+// and a bound prefill row's prompt-side speed is exempt (chat-status-line.md#R9).
 // WP-R11-DISPLAY appends CR-11 (#R11): the chip's display selectors are built
 // from claimable-filtered rows, so foreign busy rows leak neither token counts
 // nor queued/prefill phase words.
@@ -34,6 +35,7 @@ import {
 	getDisplayPromptTokens,
 	getDisplayView,
 	getReasoningText,
+	hasBusyRows,
 	hasOwnOutputEvidence,
 	isClaimable,
 	resolveDisplayPhase,
@@ -148,8 +150,8 @@ describe('formatUsageTooltipHtml', () => {
 });
 
 // CR-09 (#R11) / CR-10 (#R12): engine activity is connection-global —
-// attribution requires ownership evidence, and zero tok/s renders before our
-// own stream's first token no matter how busy the engine looks.
+// attribution requires ownership evidence; decode-side tok/s stays zero
+// pre-token, but a bound prefill row's prompt-side speed is exempt (#R9).
 describe('own-run engine attribution — isClaimable (CR-09, #R11)', () => {
 	const run = (over: Partial<RunStats> = {}): RunStats =>
 		({
@@ -217,7 +219,7 @@ describe('own-run engine attribution — isClaimable (CR-09, #R11)', () => {
 		expect(isClaimable({ request_id: 'no-age' }, run({ firstDeltaAt: null }), ctx)).toBe(false);
 	});
 
-	it('claimOwnRequestId never claims before first token and only picks own-age rows', () => {
+	it('claimOwnRequestId: pre-token binds positionally via the filtered view but never claims the request id', () => {
 		const model = {
 			id: 'model-a',
 			generating: [
@@ -225,10 +227,12 @@ describe('own-run engine attribution — isClaimable (CR-09, #R11)', () => {
 				{ request_id: 'own', elapsed_seconds: 1, startedAt: 10_300, tokens_per_second: 38 }
 			]
 		};
-		// pre-first-token: no claim attempts at all
-		expect(claimOwnRequestId(model, run({ firstDeltaAt: null }), null, ctx)).toBeNull();
+		const singleModel = { id: 'model-a', generating: [model.generating[1]] };
 		// post-first-token: the foreign older row is filtered out
 		expect(claimOwnRequestId(model, run(), null, ctx)).toBe('own');
+		// pre-token with one row → claimable model has the row; with two rows → single-busy-row rule blocks
+		expect(claimOwnRequestId(singleModel, run({ firstDeltaAt: null }), null, ctx)).toBeNull();
+		expect(claimOwnRequestId(model, run({ firstDeltaAt: null }), null, ctx)).toBeNull();
 		// only foreign rows left → nothing claimable
 		expect(
 			claimOwnRequestId({ id: 'model-a', generating: [model.generating[0]] }, run(), null, ctx)
@@ -292,8 +296,8 @@ describe('zero rate before first token — computeLiveTps (CR-10, #R12)', () => 
 		).toBe(0);
 	});
 
-	it('returns 0 with an active prefill row while no first token arrived', () => {
-		expect(computeLiveTps({ phase: 'prefilling', prefill: { speed: 900 } }, run(null))).toBe(0);
+	it('returns prefill speed (not 0) when bound to a prefill row before first token (LP-05)', () => {
+		expect(computeLiveTps({ phase: 'prefilling', prefill: { speed: 900 } }, run(null))).toBe(900);
 	});
 
 	it('adopts the engine row rate once the run has streamed its first token', () => {
@@ -307,7 +311,7 @@ describe('zero rate before first token — computeLiveTps (CR-10, #R12)', () => 
 		expect(computeLiveTps({ phase: 'idle' }, run(12_000), 7, 3)).toBe(7);
 		expect(computeLiveTps({ phase: 'idle' }, run(12_000), 0, 3)).toBe(3);
 		// client rates stay gated on streamed content upstream: a run without
-		// first token still renders 0 even with non-zero client inputs.
+		// first token still renders 0 even with non-zero client inputs (decode-side).
 		expect(computeLiveTps({ phase: 'idle' }, run(null), 7, 3)).toBe(0);
 	});
 
@@ -988,5 +992,162 @@ describe('status-line evidence (CS-01/CS-02/CS-04, #R1-#R4)', () => {
 				hasOwnDeltas: false
 			})
 		).toBe('loading');
+	});
+});
+
+// LP-01..LP-06: own-row pre-token binding. Before firstDeltaAt, the engine
+// view must still reflect a single busy row whose start-time is evidenced
+// (startedAt or elapsed-derived), matches model/chat, and is not earlier than
+// the run start minus 250 ms. Multiple busy rows or rows lacking age evidence
+// stay unbound so foreign activity never leaks into the chip.
+describe('own-row pre-token binding (LP-01..LP-06)', () => {
+	const run = (over: Partial<RunStats> = {}): RunStats =>
+		({
+			messageId: 'm1',
+			chatId: 'c1',
+			modelId: 'model-a',
+			urlIdx: null,
+			startedAt: 10_000,
+			firstDeltaAt: null,
+			lastDeltaWasReasoning: false,
+			estTokens: 0,
+			usage: null,
+			step: null,
+			steps: [],
+			claimedRequestId: null,
+			context: null,
+			contextThreshold: null,
+			engineActivity: null,
+			...over
+		}) as RunStats & typeof over;
+	const ctx = { modelId: 'model-a', chatId: 'c1' };
+
+	// LP-01: single prefill row with valid startedAt → claimed
+	it('LP-01: single prefill row with startedAt=run.startedAt+100 is claimable before first token', () => {
+		const model = {
+			id: 'model-a',
+			prefilling: [
+				{
+					request_id: 'p1',
+					processed: 500,
+					total: 8000,
+					speed: 900,
+					elapsed: 0.1,
+					startedAt: 10_100,
+					prompt_tokens: 8000
+				}
+			]
+		};
+		const view = getDisplayView(model, run(), null, ctx);
+		expect(view.phase).toBe('prefilling');
+		expect(view.prefill?.request_id).toBe('p1');
+		// computeLiveTps should return the prefill speed even before first token
+		expect(computeLiveTps(view, run(), 0, 0)).toBe(900);
+	});
+
+	// LP-02: row that predates the run beyond slack → not claimable
+	it('LP-02: row with startedAt=run.startedAt-5000 (predates run) is not claimable pre-token', () => {
+		const model = {
+			id: 'model-a',
+			prefilling: [
+				{
+					request_id: 'p2',
+					processed: 500,
+					total: 8000,
+					speed: 900,
+					elapsed: 5,
+					startedAt: 5_000,
+					prompt_tokens: 8000
+				}
+			]
+		};
+		const view = getDisplayView(model, run(), null, ctx);
+		expect(view.phase).not.toBe('prefilling');
+		expect(computeLiveTps(view, run(), 0, 0)).toBe(0);
+	});
+
+	// LP-03: two busy rows → single-busy-row rule blocks binding
+	it('LP-03: pre-token with TWO busy rows (prefill+generating) → nothing claimable', () => {
+		const model = {
+			id: 'model-a',
+			prefilling: [
+				{
+					request_id: 'p3a',
+					processed: 500,
+					total: 8000,
+					speed: 900,
+					elapsed: 0.1,
+					startedAt: 10_100,
+					prompt_tokens: 8000
+				}
+			],
+			generating: [
+				{
+					request_id: 'p3b',
+					elapsed_seconds: 0.2,
+					generated_tokens: 10,
+					tokens_per_second: 50,
+					startedAt: 10_200,
+					prompt_tokens: 8000
+				}
+			]
+		};
+		const view = getDisplayView(model, run(), null, ctx);
+		expect(view.phase).not.toBe('prefilling');
+		expect(computeLiveTps(view, run(), 0, 0)).toBe(0);
+	});
+
+	// LP-04: row without age evidence → not claimable pre-token + hasBusyRows predicate
+	it('LP-04: single pre-token row without age evidence is not claimable; hasBusyRows works', () => {
+		const model = {
+			id: 'model-a',
+			is_loading: true,
+			prefilling: [{ request_id: 'p4', processed: 500, total: 8000, speed: 900 }]
+		};
+		// no startedAt, no elapsed → pre-token path requires age evidence
+		const view = getDisplayView(model, run(), null, ctx);
+		expect(view.phase).not.toBe('prefilling');
+		// hasBusyRows should be true for a populated model
+		expect(hasBusyRows(model)).toBe(true);
+		expect(hasBusyRows(null)).toBe(false);
+		expect(hasBusyRows(undefined)).toBe(false);
+	});
+
+	// LP-05: computeLiveTps prefill/generating before and after first token
+	it('LP-05: computeLiveTps prefill view (speed 900) + null firstDeltaAt → 900', () => {
+		const prefillView = { phase: 'prefilling', prefill: { speed: 900 } };
+		expect(computeLiveTps(prefillView, run({ firstDeltaAt: null }), 0, 0)).toBe(900);
+	});
+
+	it('LP-05: generating view (tps 80) + null firstDeltaAt → 0 (decode-side gated)', () => {
+		const genView = { phase: 'generating', generating: { tokens_per_second: 80 } };
+		expect(computeLiveTps(genView, run({ firstDeltaAt: null }), 0, 0)).toBe(0);
+	});
+
+	it('LP-05: run with firstDeltaAt set + generating view → 80', () => {
+		const genView = { phase: 'generating', generating: { tokens_per_second: 80 } };
+		expect(computeLiveTps(genView, run({ firstDeltaAt: 12_000 }), 0, 0)).toBe(80);
+	});
+
+	// LP-06: row.modelId mismatch → not claimable pre-token
+	it('LP-06: single pre-token row with mismatched modelId is not claimable', () => {
+		const model = {
+			id: 'model-a',
+			prefilling: [
+				{
+					request_id: 'p6',
+					processed: 500,
+					total: 8000,
+					speed: 900,
+					elapsed: 0.1,
+					startedAt: 10_100,
+					modelId: 'other-model',
+					prompt_tokens: 8000
+				}
+			]
+		};
+		const view = getDisplayView(model, run(), null, ctx);
+		expect(view.phase).not.toBe('prefilling');
+		expect(computeLiveTps(view, run(), 0, 0)).toBe(0);
 	});
 });

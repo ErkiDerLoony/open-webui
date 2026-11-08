@@ -228,23 +228,50 @@ export const claimRequestId = (
 // connection-global, so a positional pick alone cannot tell our request from
 // foreign traffic (title/follow-up background tasks, other chats' streams).
 // Evidence required before a row may be claimed for a run:
-//  1. the run has produced its first streamed token (firstDeltaAt set) —
-//     before that, oMLX may not even have scheduled our request, so any busy
-//     row belongs to someone else;
+//  1. before the run's first token a row may bind ONLY as the model's single
+//     busy row with start-time evidence not earlier than the run start
+//     (chat-status-line.md#R7); two or more concurrent busy rows bind nothing.
 //  2. the row started no earlier than the run began (250 ms clock-alignment
 //     slack for submit-vs-schedule skew) — a row that predates our run cannot
 //     be ours;
 //  3. when the row carries a model id, it must be the run's model; when the
 //     caller supplies its chat id and the row echoes one, they must match.
-// Rows without age evidence (no startedAt and no elapsed field) pass the age
-// check: partial oMLX builds omit both, and the firstDeltaAt gate plus the
-// model match remain the attribution signal.
+//  4. before firstDeltaAt, a row is claimable ONLY IF it has start-time
+//     evidence (startedAt or elapsed-derived age), matches model/chat, started
+//     no earlier than run.startedAt - 250 ms, AND the model has exactly one
+//     busy row total (prevents binding foreign activity). Rows lacking
+//     start-time evidence are never bound pre-token.
 const CLAIM_START_SLACK_MS = 250;
+
+// Returns true when the engine model has at least one busy row
+// (prefill / generate / waiting). Used by the display to suppress the
+// "loading model" word when actual activity evidence exists.
+export const hasBusyRows = (model: EngineModelActivity | null | undefined): boolean =>
+	!!(
+		(model?.prefilling?.length ?? 0) +
+			(model?.generating?.length ?? 0) +
+			(model?.waiting?.length ?? 0) >
+		0
+	);
 
 export type ClaimRunView = {
 	startedAt: number;
 	firstDeltaAt: number | null;
 	chatId?: string | null;
+};
+
+// Shared model/chat matcher extracted from isClaimable — reused by
+// withClaimableRows' pre-token path so both code paths share one implementation.
+const modelMatchesRow = (
+	row: EnginePrefillRow | EngineGeneratingRow | EngineWaitingRow,
+	run: ClaimRunView | null | undefined,
+	ctx?: { modelId?: string | null; chatId?: string | null }
+): boolean => {
+	const expectedModel = ctx?.modelId ?? null;
+	if (expectedModel && row.modelId != null && row.modelId !== expectedModel) return false;
+	const expectedChat = ctx?.chatId ?? run?.chatId ?? null;
+	if (expectedChat && row.chat_id != null && row.chat_id !== expectedChat) return false;
+	return true;
 };
 
 // Absolute epoch-ms a row began. Prefer the engine's own startedAt; else
@@ -272,10 +299,7 @@ export const isClaimable = (
 ): boolean => {
 	if (!row || !run) return false;
 	if (run.firstDeltaAt === null || run.firstDeltaAt === undefined) return false;
-	const expectedModel = ctx?.modelId ?? null;
-	if (expectedModel && row.modelId != null && row.modelId !== expectedModel) return false;
-	const expectedChat = ctx?.chatId ?? run.chatId ?? null;
-	if (expectedChat && row.chat_id != null && row.chat_id !== expectedChat) return false;
+	if (!modelMatchesRow(row, run, ctx)) return false;
 	const startedAt = getEngineRowStartedAt(row);
 	if (startedAt !== null && startedAt < run.startedAt - CLAIM_START_SLACK_MS) return false;
 	return true;
@@ -284,23 +308,45 @@ export const isClaimable = (
 // Model narrowed to the rows a run may legitimately claim (isClaimable). The
 // synthetic-claim path in claimRequestId keys off row presence, so it keeps
 // working on the filtered model.
+// Pre-token path (firstDeltaAt null): a row is claimable only if it has
+// start-time evidence (startedAt or elapsed), matches model/chat, and the
+// model has exactly one busy row total — prevents binding foreign activity.
 export const withClaimableRows = (
 	model: EngineModelActivity | null | undefined,
 	run: ClaimRunView | null | undefined,
 	ctx?: { modelId?: string | null; chatId?: string | null }
 ): EngineModelActivity | null => {
 	if (!model) return null;
+	const preToken = run?.firstDeltaAt === null || run?.firstDeltaAt === undefined;
+	const allRows = [
+		...(model.prefilling ?? []),
+		...(model.generating ?? []),
+		...(model.waiting ?? [])
+	];
+	const busyTotal = allRows.length;
+	const isClaimablePre = (
+		r: EnginePrefillRow | EngineGeneratingRow | EngineWaitingRow
+	): boolean => {
+		const startedAt = getEngineRowStartedAt(r);
+		if (startedAt === null || !run) return false;
+		if (startedAt < run.startedAt - CLAIM_START_SLACK_MS) return false;
+		return modelMatchesRow(r, run, ctx);
+	};
+	const rowFilter = (r: EnginePrefillRow | EngineGeneratingRow | EngineWaitingRow): boolean =>
+		preToken ? busyTotal === 1 && isClaimablePre(r) : isClaimable(r, run, ctx);
 	return {
 		...model,
-		prefilling: (model.prefilling ?? []).filter((r) => isClaimable(r, run, ctx)),
-		generating: (model.generating ?? []).filter((r) => isClaimable(r, run, ctx)),
-		waiting: (model.waiting ?? []).filter((r) => isClaimable(r, run, ctx))
+		prefilling: (model.prefilling ?? []).filter(rowFilter),
+		generating: (model.generating ?? []).filter(rowFilter),
+		waiting: (model.waiting ?? []).filter(rowFilter)
 	};
 };
 
-// Claim only for runs with ownership evidence: no claim attempts before the
-// run's own stream produced its first token, and only rows that started with
-// the run are candidates (spec #R11).
+// Claim for a run: if a claim already exists and its row is still active, keep it;
+// otherwise claim the newest active request with matching ownership evidence.
+// Pre-token (firstDeltaAt null): claimable model is filtered but no id is
+// claimed (returns null); display binds positionally inside the filtered model
+// via getDisplayView.
 export const claimOwnRequestId = (
 	model: EngineModelActivity | null | undefined,
 	run: ClaimRunView | null | undefined,
@@ -308,24 +354,32 @@ export const claimOwnRequestId = (
 	ctx?: { modelId?: string | null; chatId?: string | null }
 ): string | null => {
 	if (!model || !run) return null;
+	const claimable = withClaimableRows(model, run, ctx);
+	if (!claimable) return null;
+	const allClaimableRows = [
+		...(claimable.prefilling ?? []),
+		...(claimable.generating ?? []),
+		...(claimable.waiting ?? [])
+	];
+	if (allClaimableRows.length === 0) return null;
 	if (run.firstDeltaAt === null || run.firstDeltaAt === undefined) return null;
-	return claimRequestId(withClaimableRows(model, run, ctx), currentClaim);
+	return claimRequestId(claimable, currentClaim);
 };
 
-// Engine-derived tok/s for the live chip (spec #R12): contributes 0 until the
-// run's own stream has produced its first token, regardless of how busy the
-// engine rows look. storeTps/clientRate (client-observed, already gated on
-// streamed content) are merged by the caller unchanged.
+// Engine-derived tok/s for the live chip (spec #R12).
+// Pre-token: prefill rows report prompt-side speed even before first token
+// (the bound prefill row carries the prompt evaluation rate).
+// Post-token: decode-side tok/s uses the max of engine/store/client.
 export const computeLiveTps = (
 	view: { phase?: string; prefill?: EnginePrefillRow; generating?: EngineGeneratingRow } | null,
 	run: ClaimRunView | null | undefined,
 	storeTps: number = 0,
 	clientRate: number = 0
 ): number => {
-	if (!run || run.firstDeltaAt === null || run.firstDeltaAt === undefined) return 0;
 	// Prefill speed is the honest rate while the prompt is being eaten —
 	// a decode number from a concurrent request would lie on this chip.
 	if (view?.phase === 'prefilling') return view.prefill?.speed ?? 0;
+	if (!run || run.firstDeltaAt === null || run.firstDeltaAt === undefined) return 0;
 	const engine = view?.phase === 'generating' ? (view.generating?.tokens_per_second ?? 0) : 0;
 	const rate = Math.max(engine, storeTps, clientRate);
 	return rate > 0 ? rate : 0;
